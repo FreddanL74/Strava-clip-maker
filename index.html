@@ -1,0 +1,741 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Strava Clip Maker</title>
+<style>
+  :root {
+    --bg: #f4f4f2; --card: #ffffff; --ink: #1c1c1c; --muted: #6b6b6b; --line: #dcdcd8;
+    --accent: #ff8c00; --accent-ink: #1c1c1c; --warn: #b3261e; --ok: #1e7a3a; --field: #fafaf8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141414; --card: #1e1e1e; --ink: #ececec; --muted: #9a9a9a; --line: #333;
+      --accent: #ff9a1f; --accent-ink: #141414; --warn: #ff8a80; --ok: #7bd88f; --field: #262626;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #141414; --card: #1e1e1e; --ink: #ececec; --muted: #9a9a9a; --line: #333;
+    --accent: #ff9a1f; --accent-ink: #141414; --warn: #ff8a80; --ok: #7bd88f; --field: #262626;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, "Segoe UI", Arial, sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; display: grid; gap: 20px; grid-template-columns: minmax(0, 1fr) 300px; align-items: start; }
+  header { grid-column: 1 / -1; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  h2 { font-size: 17px; margin: 0 0 12px; }
+  .lead, .muted { color: var(--muted); }
+  .lead { margin: 0; }
+  .col { display: grid; gap: 20px; min-width: 0; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px; min-width: 0; }
+  label.field { display: grid; gap: 6px; margin-bottom: 12px; font-weight: 600; }
+  input[type=file] { font: inherit; max-width: 100%; }
+  input[type=number] { font: inherit; width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--field); color: var(--ink); }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .grid2 label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+  .checks { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px 16px; margin: 4px 0 14px; }
+  .checks label { display: flex; gap: 8px; align-items: center; }
+  .checks label.off { color: var(--muted); }
+  .checks small { color: var(--muted); }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  button { font: inherit; padding: 7px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--field); color: var(--ink); cursor: pointer; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 700; padding: 10px 18px; }
+  button:disabled { opacity: .5; cursor: default; }
+  .offset { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .offset input { width: 110px; }
+  .info { font-size: 13px; color: var(--muted); white-space: pre-wrap; margin: 6px 0 0; }
+  .status { font-size: 14px; margin-top: 10px; min-height: 1.4em; }
+  .status.err { color: var(--warn); }
+  .status.ok { color: var(--ok); }
+  progress { width: 100%; height: 10px; margin-top: 10px; }
+  aside { position: sticky; top: 16px; display: grid; gap: 10px; }
+  #stage { width: 100%; aspect-ratio: 9 / 16; background: #111; border-radius: 12px; display: block; }
+  #scrub { width: 100%; }
+  #result { width: 100%; border-radius: 12px; display: none; background: #111; }
+  a.download { display: none; font-weight: 700; color: var(--accent); }
+  hr { border: 0; border-top: 1px solid var(--line); margin: 14px 0; }
+  @media (max-width: 760px) {
+    main { grid-template-columns: 1fr; }
+    aside { position: static; max-width: 320px; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Strava clip maker</h1>
+    <p class="lead">Combine a GoPro video or time-lapse photos with a Garmin GPX or TCX file into a 30-second portrait time-lapse with overlays. Everything runs locally in your browser; no file leaves this computer.</p>
+  </header>
+
+  <div class="col">
+    <section class="card">
+      <h2>1. Files</h2>
+      <label class="field">Video or photos: one video, all chapters of one recording, or a series of JPG photos
+        <input type="file" id="videoIn" accept="video/mp4,video/quicktime,video/*,image/jpeg,.jpg,.jpeg" multiple>
+      </label>
+      <label class="field">…or a whole folder (for example D:\DCIM). The page picks the photos or video recorded during the activity. The browser asks to "upload" the files; they are only read locally.
+        <input type="file" id="folderIn" webkitdirectory multiple>
+      </label>
+      <label class="field">Activity file (GPX or TCX)
+        <input type="file" id="trackIn" accept=".gpx,.tcx,application/gpx+xml,application/xml">
+      </label>
+      <p class="info" id="fileInfo">No files loaded.</p>
+    </section>
+
+    <section class="card">
+      <h2>2. What to show</h2>
+      <div class="checks" id="checks">
+        <label><input type="checkbox" id="optMap" checked> GPS trace (map) <small data-for="map"></small></label>
+        <label><input type="checkbox" id="optHr" checked> Heart rate <small data-for="hr"></small></label>
+        <label><input type="checkbox" id="optSpd" checked> Speed <small data-for="spd"></small></label>
+        <label><input type="checkbox" id="optPwr" checked> Power <small data-for="pwr"></small></label>
+        <label><input type="checkbox" id="optTime" checked> Time of day</label>
+      </div>
+      <hr>
+      <div class="checks">
+        <label><input type="checkbox" id="optFlip"> Rotate video 180° (camera upside down)</label>
+        <label><input type="checkbox" id="optHideEnd"> Also hide map around the end point</label>
+      </div>
+      <div class="grid2">
+        <label>Privacy zone around start (m, 0 = off)<input type="number" id="privacy" value="500" min="0" step="50"></label>
+        <label>Clip length (s)<input type="number" id="clipLen" value="29.5" min="3" max="60" step="0.5"></label>
+        <label>Skip start of video (s)<input type="number" id="trimStart" value="0" min="0" step="1"></label>
+        <label>Skip end of video (s)<input type="number" id="trimEnd" value="0" min="0" step="1"></label>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>3. Sync video and data</h2>
+      <p class="muted" style="margin-top:0">Offset = seconds into the activity file at the first video frame or photo. It starts from the camera clock, which is often off by tens of seconds. Auto-sync matches image motion against speed. Check the result with the preview slider: the dot should stop when you stop.</p>
+      <div class="offset">
+        <button data-d="-10">−10</button><button data-d="-1">−1</button>
+        <input type="number" id="offset" value="0" step="0.5">
+        <button data-d="1">+1</button><button data-d="10">+10</button>
+        <button id="autoSync">Auto-sync</button>
+      </div>
+      <p class="info" id="syncInfo"></p>
+    </section>
+
+    <section class="card">
+      <h2>4. Make the clip</h2>
+      <div class="row">
+        <button class="primary" id="renderBtn" disabled>Render clip</button>
+        <a class="download" id="download" href="#">Download MP4</a>
+      </div>
+      <progress id="prog" value="0" max="1" hidden></progress>
+      <div class="status" id="status"></div>
+    </section>
+  </div>
+
+  <aside>
+    <canvas id="stage" width="1080" height="1920"></canvas>
+    <input type="range" id="scrub" min="0" max="1" step="0.1" value="0" disabled aria-label="Preview position">
+    <div class="info" id="scrubInfo">Load files to see a preview.</div>
+    <video id="result" controls playsinline></video>
+  </aside>
+</main>
+
+<script type="module">
+import { Muxer, ArrayBufferTarget } from 'https://cdn.jsdelivr.net/npm/mp4-muxer@5.1.3/+esm';
+
+const $ = id => document.getElementById(id);
+const W = 1080, H = 1920, VIDEO_Y = 70, VIDEO_S = 1080, FPS = 30;
+const canvas = $('stage'), ctx = canvas.getContext('2d');
+const S = { kind: 'video', clips: [], photos: [], total: 0, track: null, camStart: null, layout: null, busy: false, scan: null, picked: null, cur: null };
+
+// ---------- small helpers ----------
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+function once(el, ev) {
+  return new Promise((res, rej) => {
+    const ok = () => { off(); res(); };
+    const bad = () => { off(); rej(new Error(el.error?.message || 'The browser could not decode this video')); };
+    const off = () => { el.removeEventListener(ev, ok); el.removeEventListener('error', bad); };
+    el.addEventListener(ev, ok); el.addEventListener('error', bad);
+  });
+}
+function setStatus(msg, cls = '') { const s = $('status'); s.textContent = msg; s.className = 'status ' + cls; }
+const fmtHMS = d => d.toLocaleTimeString('sv-SE', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+const fmtHM = d => d.toLocaleTimeString('sv-SE', { hour: '2-digit', minute: '2-digit' });
+const fmtDur = s => { s = Math.round(s); const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, x = s % 60; return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(x).padStart(2, '0'); };
+const num = el => el ? parseFloat(el.textContent) : NaN;
+const firstTag = (el, tag) => el.getElementsByTagNameNS('*', tag)[0];
+
+// ---------- video files ----------
+function chapterKey(name) {
+  let m = /^GOPR(\d{4})/i.exec(name); if (m) return [+m[1], 0];        // HERO (old): GOPRxxxx, then GP01xxxx ...
+  m = /^G[A-Z](\d{2})(\d{4})/i.exec(name); if (m) return [+m[2], +m[1]]; // GP/GH/GX + chapter + recording
+  return [Infinity, 0];
+}
+async function readView(file, pos, len) { return new DataView(await file.slice(pos, pos + len).arrayBuffer()); }
+const fourcc = (dv, o) => String.fromCharCode(dv.getUint8(o), dv.getUint8(o + 1), dv.getUint8(o + 2), dv.getUint8(o + 3));
+const isImg = f => /\.jpe?g$/i.test(f.name) || f.type === 'image/jpeg';
+const isVid = f => /\.(mp4|mov)$/i.test(f.name) || (f.type.startsWith('video/') && !/\.(lrv|thm)$/i.test(f.name));
+const sortChapters = files => [...files].sort((a, b) => { const ka = chapterKey(a.name), kb = chapterKey(b.name); return ka[0] - kb[0] || ka[1] - kb[1] || a.name.localeCompare(b.name); });
+// MP4 'mvhd': creation time (GoPro writes the camera's local wall-clock time) and duration in seconds
+async function mp4Info(file) {
+  let pos = 0;
+  while (pos + 8 <= file.size) {
+    const h = await readView(file, pos, 16);
+    let size = h.getUint32(0), hdr = 8; const type = fourcc(h, 4);
+    if (size === 1) { size = h.getUint32(8) * 2 ** 32 + h.getUint32(12); hdr = 16; } else if (size === 0) size = file.size - pos;
+    if (size < 8) return null;
+    if (type === 'moov') {
+      let p = pos + hdr; const end = pos + size;
+      while (p + 8 <= end) {
+        const c = await readView(file, p, 40); const cs = c.getUint32(0);
+        if (fourcc(c, 4) === 'mvhd') {
+          const v1 = c.getUint8(8) === 1;
+          const secs = v1 ? c.getUint32(12) * 2 ** 32 + c.getUint32(16) : c.getUint32(12);
+          const scale = v1 ? c.getUint32(28) : c.getUint32(20), dur = v1 ? c.getUint32(32) * 2 ** 32 + c.getUint32(36) : c.getUint32(24);
+          let time = null;
+          if (secs) { const w = new Date(Date.UTC(1904, 0, 1) + secs * 1000); time = new Date(w.getUTCFullYear(), w.getUTCMonth(), w.getUTCDate(), w.getUTCHours(), w.getUTCMinutes(), w.getUTCSeconds()); }
+          return { time, duration: scale ? dur / scale : 0 };
+        }
+        if (cs < 8) break; p += cs;
+      }
+      return null;
+    }
+    pos += size;
+  }
+  return null;
+}
+// ---------- photos ----------
+// EXIF DateTimeOriginal (camera local time); null when missing
+async function exifTime(file) {
+  let buf = null;
+  for (let k = 0; k < 4 && !buf; k++) { try { buf = await file.slice(0, 65536).arrayBuffer(); } catch { await sleep(100 * (k + 1)); } }  // retry flaky reads
+  if (!buf) return null;
+  try {
+    const dv = new DataView(buf);
+    if (dv.getUint16(0) !== 0xFFD8) return null;
+    let p = 2;
+    while (p + 10 <= dv.byteLength) {
+      const mk = dv.getUint16(p), len = dv.getUint16(p + 2);
+      if ((mk & 0xFF00) !== 0xFF00) return null;
+      if (mk === 0xFFE1 && dv.getUint32(p + 4) === 0x45786966) {
+        const T = p + 10, le = dv.getUint16(T) === 0x4949;
+        const u16 = o => dv.getUint16(T + o, le), u32 = o => dv.getUint32(T + o, le);
+        const str = o => { let s = ''; for (let i = 0; i < 19; i++) s += String.fromCharCode(dv.getUint8(T + o + i)); return s; };
+        const find = (ifd, tag) => { const n = u16(ifd); for (let i = 0; i < n; i++) if (u16(ifd + 2 + 12 * i) === tag) return ifd + 2 + 12 * i; return -1; };
+        const ifd0 = u32(4); let s = null;
+        const ex = find(ifd0, 0x8769);
+        if (ex >= 0) { const e = find(u32(ex + 8), 0x9003); if (e >= 0) s = str(u32(e + 8)); }
+        if (!s) { const e = find(ifd0, 0x0132); if (e >= 0) s = str(u32(e + 8)); }
+        const m = s && /^(\d{4}):(\d\d):(\d\d) (\d\d):(\d\d):(\d\d)/.exec(s);
+        return m ? new Date(+m[1], m[2] - 1, +m[3], +m[4], +m[5], +m[6]) : null;
+      }
+      p += 2 + len;
+    }
+  } catch { }
+  return null;
+}
+async function readPhotoTimes(files, onProg) {
+  const out = new Array(files.length); let next = 0, done = 0;
+  await Promise.all(Array.from({ length: 4 }, async () => {
+    while (next < files.length) {
+      const i = next++, d = await exifTime(files[i]);
+      out[i] = { file: files[i], ex: (d || new Date(files[i].lastModified)).getTime() };
+      if (++done % 100 === 0) onProg?.(done / files.length);
+    }
+  }));
+  return out;
+}
+// Split into runs (gap > 10 s) and fit a constant interval per run; EXIF only has whole seconds.
+function photoRuns(items) {
+  items.sort((a, b) => a.ex - b.ex || a.file.name.localeCompare(b.file.name));
+  const runs = []; let cur = [];
+  for (const it of items) { if (cur.length && it.ex - cur[cur.length - 1].ex > 10000) { runs.push(cur); cur = []; } cur.push(it); }
+  if (cur.length) runs.push(cur);
+  for (const r of runs) {
+    const n = r.length, base = r[0].ex; let a = 0, b = 0;
+    if (n > 1) {
+      let si = 0, sy = 0, sii = 0, siy = 0;
+      r.forEach((it, i) => { const y = it.ex - base; si += i; sy += y; sii += i * i; siy += i * y; });
+      b = (n * siy - si * sy) / (n * sii - si * si); a = (sy - b * si) / n;
+    }
+    r.forEach((it, i) => { it.abs = base + a + b * i; });
+    r.interval = n > 1 && b > 0 ? b / 1000 : 1;
+    r.start = r[0].abs; r.end = r[n - 1].abs + r.interval * 1000;
+  }
+  return runs;
+}
+const bmCache = new Map();
+function clearBitmaps() { for (const p of bmCache.values()) p.then(b => b.close()).catch(() => { }); bmCache.clear(); }
+function getBitmap(i) {
+  let p = bmCache.get(i);
+  if (p) { bmCache.delete(i); bmCache.set(i, p); return p; }
+  const side = Math.min(S.photoW, S.photoH);
+  p = createImageBitmap(S.photos[i].file, (S.photoW - side) / 2, (S.photoH - side) / 2, side, side, { resizeWidth: VIDEO_S, resizeHeight: VIDEO_S, resizeQuality: 'high' });
+  bmCache.set(i, p);
+  for (const k of [...bmCache.keys()]) {
+    if (bmCache.size <= 8) break;
+    if (k !== i && k !== S.curIdx) { bmCache.get(k).then(b => b.close()).catch(() => { }); bmCache.delete(k); }
+  }
+  return p;
+}
+function photoIndexAt(t) {
+  const P = S.photos, x = t + S.photoInterval / 2; let lo = 0, hi = P.length - 1;
+  while (lo < hi) { const m = (lo + hi + 1) >> 1; if (P[m].t <= x) lo = m; else hi = m - 1; }
+  return lo;
+}
+async function setPhotos(items) {
+  for (const c of S.clips) URL.revokeObjectURL(c.url);
+  clearBitmaps();
+  const base = items[0].abs, P = items.map(it => ({ file: it.file, t: (it.abs - base) / 1000 }));
+  const probe = await createImageBitmap(items[0].file).catch(() => { throw new Error(`${items[0].file.name}: the browser could not decode this photo`); });
+  S.photoW = probe.width; S.photoH = probe.height; probe.close();
+  S.kind = 'image'; S.clips = []; S.photos = P; S.curIdx = -1;
+  S.photoInterval = P.length > 1 ? P[P.length - 1].t / (P.length - 1) : 1;
+  S.total = P[P.length - 1].t + S.photoInterval;
+  S.camStart = new Date(base);
+}
+async function loadMedia(fileList, onProg) {
+  const all = [...fileList], imgs = all.filter(isImg), vids = all.filter(isVid);
+  if (imgs.length && vids.length) throw new Error('Choose either video files or photos, not both.');
+  if (imgs.length) { const items = await readPhotoTimes(imgs, onProg); await setPhotos(photoRuns(items).flat()); }
+  else if (vids.length) await loadVideos(vids);
+  else throw new Error('No video (MP4/MOV) or JPG photo among the chosen files.');
+}
+// Folder: list photo runs and video recordings with their camera-clock time spans
+async function scanFolder(fileList) {
+  const all = [...fileList], imgs = all.filter(isImg), vids = all.filter(isVid);
+  const items = await readPhotoTimes(imgs, p => setStatus(`Reading photo timestamps ${Math.round(100 * p)} %`));
+  const found = photoRuns(items).map(r => ({ kind: 'image', items: r, start: r.start, end: r.end, label: `${r.length} photos ${r[0].file.name}–${r[r.length - 1].file.name}` }));
+  const recs = new Map();
+  for (const f of vids) { const k = chapterKey(f.name)[0], key = isFinite(k) ? 'R' + k : f.name; if (!recs.has(key)) recs.set(key, []); recs.get(key).push(f); }
+  for (const fs of recs.values()) {
+    const files = sortChapters(fs); let dur = 0, start = null;
+    for (const f of files) { const m = await mp4Info(f).catch(() => null); if (!m) continue; if (start === null && m.time) start = m.time.getTime(); dur += m.duration; }
+    if (start !== null) found.push({ kind: 'video', files, start, end: start + dur * 1000, label: `video ${files.map(f => f.name).join(', ')}` });
+  }
+  S.scan = { found, nImg: imgs.length, nVid: vids.length };
+}
+// The photo run or recording that overlaps the activity most (2 min slack for a wrong camera clock)
+function pickFromScan() {
+  const g = S.track; if (!S.scan || !g) return null;
+  const a = g.t0 - 120000, b = g.t0 + (g.n - 1) * 1000 + 120000;
+  let best = null, bestOv = 0;
+  for (const r of S.scan.found) { const ov = Math.min(b, r.end) - Math.max(a, r.start); if (ov > bestOv) { best = r; bestOv = ov; } }
+  return best;
+}
+async function applyScan() {
+  const r = pickFromScan();
+  if (!r) {
+    const list = S.scan.found.map(x => `${x.label} (${new Date(x.start).toLocaleString('sv-SE')})`).join('; ');
+    throw new Error(`Nothing in the folder was recorded during the activity (the camera clock may be wrong). Found: ${list || 'no photos or videos'}. Choose the files by hand instead.`);
+  }
+  if (r.kind === 'image') await setPhotos(r.items); else await loadVideos(r.files);
+  S.picked = r.label;
+}
+async function loadVideos(fileList) {
+  for (const c of S.clips) URL.revokeObjectURL(c.url);
+  clearBitmaps(); S.photos = [];
+  const files = sortChapters(fileList);
+  const clips = []; let start = 0;
+  for (const f of files) {
+    const url = URL.createObjectURL(f), v = document.createElement('video');
+    v.muted = true; v.preload = 'auto'; v.playsInline = true; v.src = url;
+    await once(v, 'loadedmetadata');
+    if (!v.videoWidth) throw new Error(`${f.name}: no decodable video track (HEVC GoPro files may need a different browser)`);
+    clips.push({ file: f, url, video: v, start, duration: v.duration, w: v.videoWidth, h: v.videoHeight });
+    start += v.duration;
+  }
+  S.kind = 'video'; S.clips = clips; S.total = start;
+  S.camStart = (await mp4Info(files[0]).catch(() => null))?.time || null;
+}
+function clipAt(t) { let c = S.clips[0]; for (const x of S.clips) if (t >= x.start) c = x; return c; }
+const hasMedia = () => S.total > 0 && (S.kind === 'image' ? S.photos.length > 0 : S.clips.length > 0);
+const mediaName = () => (S.kind === 'image' ? S.photos[0].file.name : S.clips[0].file.name).replace(/\.[^.]+$/, '') || 'clip';
+let seekChain = Promise.resolve();
+function seekTo(t) { const p = seekChain.then(() => doSeek(t)); seekChain = p.catch(() => {}); return p; }
+// Positions the source at t seconds and returns S.cur = { src, w, h } for drawing
+async function doSeek(t) {
+  if (S.kind === 'image') {
+    const i = photoIndexAt(t); S.curIdx = i;
+    const bm = await getBitmap(i);
+    if (S.busy) for (let k = 1; k <= 3 && i + k < S.photos.length; k++) getBitmap(i + k);  // prefetch while rendering
+    return S.cur = { src: bm, w: bm.width, h: bm.height };
+  }
+  const c = clipAt(t), v = c.video;
+  const lt = Math.min(Math.max(0, t - c.start), c.duration - 0.05);
+  if (!(Math.abs(v.currentTime - lt) < 0.0005 && v.readyState >= 2)) { const done = once(v, 'seeked'); v.currentTime = lt; await done; }
+  return S.cur = { src: v, w: c.w, h: c.h };
+}
+
+// ---------- activity file (GPX / TCX) ----------
+function resample(times, vals, t0, n) {
+  // linear interpolation of the valid samples onto 1-s steps; edges hold the nearest value
+  const out = new Float64Array(n).fill(NaN);
+  const T = [], V = [];
+  for (let i = 0; i < times.length; i++) if (!isNaN(vals[i])) { T.push(times[i]); V.push(vals[i]); }
+  if (!T.length) return null;
+  let k = 0;
+  for (let s = 0; s < n; s++) {
+    const ts = t0 + s * 1000;
+    while (k < T.length - 2 && T[k + 1] <= ts) k++;
+    if (T.length === 1 || ts <= T[0]) { out[s] = V[0]; continue; }
+    if (ts >= T[T.length - 1]) { out[s] = V[V.length - 1]; continue; }
+    const span = T[k + 1] - T[k], f = span > 0 ? Math.min(1, Math.max(0, (ts - T[k]) / span)) : 0;
+    out[s] = V[k] + (V[k + 1] - V[k]) * f;
+  }
+  return out;
+}
+function smooth(a, half) {
+  if (!a) return null;
+  const o = new Float64Array(a.length);
+  for (let i = 0; i < a.length; i++) { let s = 0, c = 0; for (let k = Math.max(0, i - half); k <= Math.min(a.length - 1, i + half); k++) { s += a[k]; c++; } o[i] = s / c; }
+  return o;
+}
+function parseTrack(text) {
+  const doc = new DOMParser().parseFromString(text, 'application/xml');
+  if (doc.getElementsByTagName('parsererror').length) throw new Error('Could not read the activity file as XML');
+  let raw = [];
+  const trk = doc.getElementsByTagNameNS('*', 'trkpt');
+  if (trk.length) {
+    for (const p of trk) raw.push({
+      t: Date.parse(firstTag(p, 'time')?.textContent), lat: parseFloat(p.getAttribute('lat')), lon: parseFloat(p.getAttribute('lon')),
+      hr: num(firstTag(p, 'hr')), pwr: num(firstTag(p, 'power') || firstTag(p, 'Watts')), spd: num(firstTag(p, 'speed')), dist: NaN });
+  } else {
+    for (const p of doc.getElementsByTagNameNS('*', 'Trackpoint')) {
+      const hb = firstTag(p, 'HeartRateBpm');
+      raw.push({ t: Date.parse(firstTag(p, 'Time')?.textContent), lat: num(firstTag(p, 'LatitudeDegrees')), lon: num(firstTag(p, 'LongitudeDegrees')),
+        hr: hb ? num(firstTag(hb, 'Value')) : NaN, pwr: num(firstTag(p, 'Watts')), spd: num(firstTag(p, 'Speed')), dist: num(firstTag(p, 'DistanceMeters')) });
+    }
+  }
+  raw = raw.filter(p => !isNaN(p.t)).sort((a, b) => a.t - b.t);
+  if (raw.length < 2) throw new Error('No timed track points found in the activity file');
+  const t0 = raw[0].t, n = Math.floor((raw[raw.length - 1].t - t0) / 1000) + 1;
+  const times = raw.map(p => p.t), ch = key => resample(times, raw.map(p => p[key]), t0, n);
+  const lat = ch('lat'), lon = ch('lon');
+  const gps = !!(lat && lon) && raw.filter(p => !isNaN(p.lat)).length > 10;
+  let spd = null;                                                       // km/h
+  const sField = ch('spd'), dist = ch('dist');
+  if (sField && raw.filter(p => !isNaN(p.spd)).length > 10) spd = sField.map(v => v * 3.6);
+  else if (gps) {
+    spd = new Float64Array(n); const kx = Math.cos(lat[0] * Math.PI / 180);
+    for (let i = 1; i < n; i++) { const dy = (lat[i] - lat[i - 1]) * 111320, dx = (lon[i] - lon[i - 1]) * 111320 * kx; spd[i] = Math.hypot(dx, dy) * 3.6; }
+    spd[0] = spd[1] || 0;
+  } else if (dist) { spd = new Float64Array(n); for (let i = 1; i < n; i++) spd[i] = Math.max(0, dist[i] - dist[i - 1]) * 3.6; }
+  return {
+    t0, n, lat: gps ? lat : null, lon: gps ? lon : null,
+    hr: ch('hr'), spd: smooth(spd, 2), pwr: smooth(ch('pwr'), 1),
+    has: { map: gps, hr: !!ch('hr'), spd: !!spd, pwr: !!ch('pwr') }
+  };
+}
+
+// ---------- layout ----------
+const opt = () => ({
+  map: $('optMap').checked && !!S.track?.has.map, hr: $('optHr').checked && !!S.track?.has.hr,
+  spd: $('optSpd').checked && !!S.track?.has.spd, pwr: $('optPwr').checked && !!S.track?.has.pwr,
+  time: $('optTime').checked, flip: $('optFlip').checked, hideEnd: $('optHideEnd').checked,
+  privacy: Math.max(0, +$('privacy').value || 0)
+});
+function buildLayout() {
+  const o = opt(), g = S.track, top = VIDEO_Y + VIDEO_S + 40, bottom = 1850;
+  const metrics = ['hr', 'spd', 'pwr', 'time'].filter(k => o[k]);
+  const tileH = o.map ? 150 : 220;
+  let map = null, tilesY = top;
+  if (o.map && g) {
+    const maxW = 1000, maxH = Math.min(560, bottom - top - (metrics.length ? tileH + 30 : 0)), pad = 30, x = 40, y = top;
+    let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
+    for (let i = 0; i < g.n; i++) { minLat = Math.min(minLat, g.lat[i]); maxLat = Math.max(maxLat, g.lat[i]); minLon = Math.min(minLon, g.lon[i]); maxLon = Math.max(maxLon, g.lon[i]); }
+    const kx = Math.cos((minLat + maxLat) / 2 * Math.PI / 180);
+    const spanX = Math.max(1e-6, (maxLon - minLon) * kx), spanY = Math.max(1e-6, maxLat - minLat);
+    const scale = Math.min((maxW - 2 * pad) / spanX, (maxH - 2 * pad) / spanY);
+    const h = Math.round(spanY * scale + 2 * pad), offX = x + (maxW - spanX * scale) / 2;
+    const px = new Float64Array(g.n), py = new Float64Array(g.n), hidden = new Uint8Array(g.n);
+    const R2 = o.privacy * o.privacy, near = (i, j) => { const dy = (g.lat[i] - g.lat[j]) * 111320, dx = (g.lon[i] - g.lon[j]) * 111320 * kx; return dx * dx + dy * dy < R2; };
+    for (let i = 0; i < g.n; i++) {
+      px[i] = offX + (g.lon[i] - minLon) * kx * scale; py[i] = y + pad + (maxLat - g.lat[i]) * scale;
+      hidden[i] = o.privacy > 0 && (near(i, 0) || (o.hideEnd && near(i, g.n - 1))) ? 1 : 0;
+    }
+    const full = new Path2D(); let pen = false;
+    for (let i = 0; i < g.n; i++) { if (hidden[i]) { pen = false; continue; } if (pen) full.lineTo(px[i], py[i]); else { full.moveTo(px[i], py[i]); pen = true; } }
+    map = { x, y, w: maxW, h, px, py, hidden, full };
+    tilesY = y + h + 30;
+  }
+  const gap = 20, tw = metrics.length ? (1000 - gap * (metrics.length - 1)) / metrics.length : 0;
+  S.layout = { o, map, tiles: metrics.map((k, i) => ({ k, x: 40 + i * (tw + gap), y: tilesY, w: tw, h: tileH })) };
+}
+
+// ---------- drawing ----------
+const LABEL = { hr: 'HEART RATE', spd: 'SPEED', pwr: 'POWER', time: 'TIME' };
+const UNIT = { hr: 'bpm', spd: 'km/h', pwr: 'W', time: '' };
+const COLOR = { hr: '#FF5A5A', spd: '#3FC1FF', pwr: '#FFC83D', time: '#FFFFFF' };
+function valueAt(arr, g) { if (!arr || g < 0 || g > arr.length - 1) return NaN; const i = Math.floor(g), f = g - i; return i + 1 < arr.length ? arr[i] + (arr[i + 1] - arr[i]) * f : arr[i]; }
+function roundRect(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x, y, w, h, r) : ctx.rect(x, y, w, h); }
+function drawFrame(srcT) {
+  const L = S.layout, o = L.o, g = S.track, off = +$('offset').value || 0, gs = srcT + off;
+  ctx.fillStyle = '#111111'; ctx.fillRect(0, 0, W, H);
+  // video: centred square crop
+  const c = S.cur, side = Math.min(c.w, c.h);
+  ctx.save();
+  if (o.flip) { ctx.translate(W / 2, VIDEO_Y + VIDEO_S / 2); ctx.rotate(Math.PI); ctx.translate(-W / 2, -(VIDEO_Y + VIDEO_S / 2)); }
+  ctx.drawImage(c.src, (c.w - side) / 2, (c.h - side) / 2, side, side, 0, VIDEO_Y, VIDEO_S, VIDEO_S);
+  ctx.restore();
+  if (!g) return;
+  const inData = gs >= 0 && gs <= g.n - 1;
+  // map
+  if (L.map) {
+    const m = L.map;
+    ctx.fillStyle = '#262626'; roundRect(m.x, m.y, m.w, m.h, 18); ctx.fill();
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    ctx.strokeStyle = '#8c8c8c'; ctx.lineWidth = 4; ctx.stroke(m.full);
+    const gi = Math.min(g.n - 1, Math.floor(Math.max(0, gs)));
+    if (gs > 0) {
+      ctx.beginPath(); let pen = false;
+      for (let i = 0; i <= gi; i++) { if (m.hidden[i]) { pen = false; continue; } if (pen) ctx.lineTo(m.px[i], m.py[i]); else { ctx.moveTo(m.px[i], m.py[i]); pen = true; } }
+      if (pen && inData && gi + 1 < g.n && !m.hidden[gi + 1]) ctx.lineTo(valueAt(m.px, gs), valueAt(m.py, gs));
+      ctx.strokeStyle = '#FF8C00'; ctx.lineWidth = 9; ctx.stroke();
+    }
+    if (inData && !m.hidden[gi]) {
+      ctx.beginPath(); ctx.arc(valueAt(m.px, gs), valueAt(m.py, gs), 14, 0, Math.PI * 2);
+      ctx.fillStyle = '#FF2020'; ctx.fill(); ctx.lineWidth = 5; ctx.strokeStyle = '#FFFFFF'; ctx.stroke();
+    }
+  }
+  // stat tiles
+  for (const t of L.tiles) {
+    ctx.fillStyle = '#222222'; roundRect(t.x, t.y, t.w, t.h, 18); ctx.fill();
+    ctx.textBaseline = 'top'; ctx.textAlign = 'left';
+    ctx.font = 'bold 26px Arial, Helvetica, sans-serif'; ctx.fillStyle = '#9A9A9A';
+    const label = LABEL[t.k] + (UNIT[t.k] ? '  ' : '');
+    ctx.fillText(label, t.x + 24, t.y + 22);
+    if (UNIT[t.k]) { const lw = ctx.measureText(label).width; ctx.font = '26px Arial, Helvetica, sans-serif'; ctx.fillStyle = '#707070'; ctx.fillText(UNIT[t.k], t.x + 24 + lw, t.y + 22); }
+    let txt = '–';
+    if (t.k === 'time') txt = fmtHM(new Date(g.t0 + gs * 1000));
+    else if (inData) { const v = valueAt(g[t.k], gs); if (!isNaN(v)) txt = t.k === 'spd' ? v.toFixed(1) : String(Math.round(v)); }
+    let size = Math.round(t.h * 0.5);
+    ctx.font = `bold ${size}px Arial, Helvetica, sans-serif`;
+    while (size > 30 && ctx.measureText(txt).width > t.w - 48) { size -= 4; ctx.font = `bold ${size}px Arial, Helvetica, sans-serif`; }
+    ctx.textBaseline = 'alphabetic'; ctx.fillStyle = COLOR[t.k];
+    ctx.fillText(txt, t.x + 24, t.y + t.h - 26);
+  }
+}
+
+// ---------- preview ----------
+let pendingT = null, previewing = false;
+async function preview(t) {
+  pendingT = t; if (previewing || S.busy) return;
+  previewing = true;
+  try {
+    while (pendingT !== null) {
+      const tt = pendingT; pendingT = null;
+      await seekTo(tt); drawFrame(tt);
+      const off = +$('offset').value || 0, g = S.track;
+      const pos = S.kind === 'image' ? `Photo ${S.curIdx + 1} / ${S.photos.length}` : `Video ${fmtDur(tt)} / ${fmtDur(S.total)}`;
+      $('scrubInfo').textContent = pos + (g ? `  ·  activity ${fmtHMS(new Date(g.t0 + (tt + off) * 1000))}` : '');
+    }
+  } catch (e) { setStatus(e.message, 'err'); }
+  previewing = false;
+}
+function refresh() {
+  if (!hasMedia()) return;
+  buildLayout();
+  $('scrub').max = Math.max(0.1, S.total - 0.1).toFixed(1); $('scrub').disabled = false;
+  $('renderBtn').disabled = !S.track;
+  $('autoSync').disabled = !(S.track?.has.spd);
+  updateSyncInfo();
+  preview(+$('scrub').value);
+}
+function updateSyncInfo() {
+  const g = S.track; if (!g || !hasMedia()) { $('syncInfo').textContent = ''; return; }
+  const off = +$('offset').value || 0;
+  const vStart = new Date(g.t0 + off * 1000), vEnd = new Date(g.t0 + (off + S.total) * 1000);
+  const a = Math.max(0, off), b = Math.min(g.n - 1, off + S.total);
+  $('syncInfo').textContent = `${S.kind === 'image' ? 'Photos cover' : 'Video covers'} ${fmtHMS(vStart)}–${fmtHMS(vEnd)} of the activity` +
+    (b > a ? ` (${fmtDur(b - a)} overlap).` : ' — no overlap with the activity data!');
+}
+function updateFileInfo() {
+  const lines = [];
+  if (S.picked) lines.push(`Picked from folder: ${S.picked}`);
+  if (S.kind === 'image' && S.photos.length) {
+    const P = S.photos;
+    lines.push(`Photos: ${P.length} (${P[0].file.name} – ${P[P.length - 1].file.name}), one every ${S.photoInterval.toFixed(2)} s`);
+    lines.push(`  covers ${fmtDur(S.total)}, ${S.photoW}×${S.photoH}, camera clock ${S.camStart.toLocaleString('sv-SE')}`);
+  } else if (S.clips.length) {
+    lines.push(`Video: ${S.clips.map(c => `${c.file.name} (${fmtDur(c.duration)})`).join(', ')}`);
+    lines.push(`  total ${fmtDur(S.total)}, ${S.clips[0].w}×${S.clips[0].h}` + (S.camStart ? `, camera clock ${S.camStart.toLocaleString('sv-SE')}` : ', no camera timestamp'));
+  }
+  const g = S.track;
+  if (g) {
+    const have = Object.entries({ 'GPS': g.has.map, 'heart rate': g.has.hr, 'speed': g.has.spd, 'power': g.has.pwr }).filter(e => e[1]).map(e => e[0]);
+    lines.push(`Activity: ${new Date(g.t0).toLocaleString('sv-SE')}, ${fmtDur(g.n - 1)}; data: ${have.join(', ') || 'none'}`);
+  }
+  $('fileInfo').textContent = lines.join('\n') || 'No files loaded.';
+  for (const k of ['map', 'hr', 'spd', 'pwr']) {
+    const box = $('opt' + { map: 'Map', hr: 'Hr', spd: 'Spd', pwr: 'Pwr' }[k]), missing = g && !g.has[k];
+    box.disabled = !!missing; box.closest('label').classList.toggle('off', !!missing);
+    document.querySelector(`small[data-for="${k}"]`).textContent = missing ? '(not in file)' : '';
+  }
+}
+function defaultOffset() {
+  if (S.track && S.camStart) { $('offset').value = ((S.camStart.getTime() - S.track.t0) / 1000).toFixed(1); }
+}
+
+// ---------- auto-sync: image motion vs speed ----------
+async function autoSync() {
+  const g = S.track; if (!g?.spd || !hasMedia()) return;
+  S.busy = true; lock(true);
+  try {
+    // sample about every 0.5 s; motion = mean abs difference to the previous sample, averaged per source second
+    // Photos (often night time-lapses) use a stop detector: share of pixels that changed vs. "moving" (speed >= 3 km/h).
+    // Plain brightness difference is fooled by headlights and flashing lights at stops.
+    const photo = S.kind === 'image', SW = 64, SH = photo ? 48 : 36;
+    const secs = Math.floor(S.total);
+    const sc = document.createElement('canvas'); sc.width = SW; sc.height = SH;
+    const sx = sc.getContext('2d', { willReadFrequently: true });
+    const mSum = new Float64Array(secs + 1), mCnt = new Uint16Array(secs + 1); let prev = null, prevT = 0;
+    let times, fetchK;
+    if (S.kind === 'image') {
+      const idx = []; let last = -1e9;
+      S.photos.forEach((p, i) => { if (p.t - last >= 0.45) { idx.push(i); last = p.t; } });
+      times = idx.map(i => S.photos[i].t);
+      const pend = new Map(), small = i => createImageBitmap(S.photos[i].file, { resizeWidth: SW, resizeHeight: SH, resizeQuality: 'medium' });
+      fetchK = async k => {   // decode up to 8 photos ahead in parallel
+        for (let j = k; j < Math.min(k + 8, idx.length); j++) if (!pend.has(j)) pend.set(j, small(idx[j]));
+        const b = await pend.get(k); pend.delete(k); return b;
+      };
+    } else {
+      times = Array.from({ length: Math.floor(S.total / 0.5) }, (_, k) => k * 0.5 + 0.05);
+      fetchK = async k => (await seekTo(times[k])).src;
+    }
+    const K = times.length;
+    $('prog').hidden = false;
+    for (let k = 0; k < K; k++) {
+      const t = times[k], src = await fetchK(k);
+      sx.drawImage(src, 0, 0, SW, SH);
+      if (photo) src.close();
+      const d = sx.getImageData(0, 0, SW, SH).data, cur = new Float32Array(SW * SH);
+      for (let i = 0; i < cur.length; i++) cur[i] = 0.299 * d[4 * i] + 0.587 * d[4 * i + 1] + 0.114 * d[4 * i + 2];
+      if (prev) {
+        let s = 0;
+        if (photo) { for (let i = 0; i < cur.length; i++) if (Math.abs(cur[i] - prev[i]) > 3) s++; }
+        else for (let i = 0; i < cur.length; i++) s += Math.abs(cur[i] - prev[i]);
+        const sec = Math.min(secs, Math.floor((t + prevT) / 2)); mSum[sec] += s / cur.length; mCnt[sec]++; }
+      prev = cur; prevT = t;
+      if (k % 20 === 0) { $('prog').value = k / K; setStatus(`Auto-sync: reading ${S.kind === 'image' ? 'photo' : 'video'} motion ${Math.round(100 * k / K)} %`); }
+    }
+    const motion = Array.from(mSum, (s, i) => mCnt[i] ? (photo ? s / mCnt[i] : Math.log(s / mCnt[i] + 0.5)) : NaN);
+    const sp = g.spd.map(v => photo ? (v < 3 ? 0 : 1) : Math.log(Math.min(v, 45) + 3));
+    // search near the camera clock when it is plausible (within 12 h of the activity), else everywhere
+    const camOff = S.camStart ? (S.camStart.getTime() - g.t0) / 1000 : NaN;
+    const minOv = 0.5 * Math.min(S.total, g.n), win = photo ? 120 : 300;
+    let lo = Math.ceil(-S.total + minOv), hi = Math.floor(g.n - minOv);
+    if (Math.abs(camOff) < 12 * 3600) { lo = Math.max(lo, Math.floor(camOff - win)); hi = Math.min(hi, Math.ceil(camOff + win)); }
+    let best = { r: -2, off: 0 }; const curve = [];
+    for (let off = lo; off <= hi; off++) {
+      let n = 0, sa = 0, sb = 0, saa = 0, sbb = 0, sab = 0;
+      for (let k = 0; k < motion.length; k++) {
+        const x = motion[k]; if (isNaN(x)) continue;
+        const gi = k + off; if (gi < 0 || gi >= g.n) continue;
+        const y = sp[gi];
+        n++; sa += x; sb += y; saa += x * x; sbb += y * y; sab += x * y;
+      }
+      if (n < 20) continue;
+      const r = (sab - sa * sb / n) / Math.sqrt((saa - sa * sa / n) * (sbb - sb * sb / n));
+      if (r > best.r) best = { r, off };
+      curve.push([off, +r.toFixed(3)]);
+    }
+    S.syncCurve = curve; S.syncMotion = motion;
+    $('offset').value = best.off.toFixed(1);
+    const weak = best.r < (photo ? 0.15 : 0.3);
+    setStatus(`Auto-sync: offset ${best.off} s (match r = ${best.r.toFixed(2)})` + (weak ? ' — weak match, check it in the preview.' : '. Check a stop in the preview.'), weak ? 'err' : 'ok');
+  } catch (e) { setStatus('Auto-sync failed: ' + e.message, 'err'); }
+  $('prog').hidden = true; S.busy = false; lock(false); refresh();
+}
+
+// ---------- render ----------
+async function pickEncoderConfig() {
+  for (const codec of ['avc1.640028', 'avc1.4d0028', 'avc1.42002a']) {
+    const cfg = { codec, width: W, height: H, bitrate: 12_000_000, framerate: FPS, avc: { format: 'avc' } };
+    try { if ((await VideoEncoder.isConfigSupported(cfg)).supported) return cfg; } catch { }
+  }
+  return null;
+}
+async function render() {
+  if (typeof VideoEncoder === 'undefined') { setStatus('This browser cannot encode video (WebCodecs missing). Use a current Edge or Chrome.', 'err'); return; }
+  const cfg = await pickEncoderConfig();
+  if (!cfg) { setStatus('No H.264 encoder available in this browser.', 'err'); return; }
+  buildLayout();
+  const len = Math.min(60, Math.max(3, +$('clipLen').value || 29.5)), N = Math.round(len * FPS);
+  const t0 = Math.max(0, +$('trimStart').value || 0), t1 = S.total - Math.max(0, +$('trimEnd').value || 0) - 0.05;
+  if (t1 - t0 < 1) { setStatus('Nothing left of the video after trimming.', 'err'); return; }
+  S.busy = true; lock(true); $('download').style.display = 'none'; $('result').style.display = 'none';
+  $('prog').hidden = false; $('prog').value = 0;
+  let encErr = null;
+  try {
+    const target = new ArrayBufferTarget();
+    const muxer = new Muxer({ target, video: { codec: 'avc', width: W, height: H, frameRate: FPS }, fastStart: 'in-memory', firstTimestampBehavior: 'offset' });
+    const enc = new VideoEncoder({ output: (chunk, meta) => muxer.addVideoChunk(chunk, meta), error: e => { encErr = e; } });
+    enc.configure(cfg);
+    const started = performance.now();
+    for (let i = 0; i < N; i++) {
+      if (encErr) throw encErr;
+      const srcT = t0 + (t1 - t0) * i / (N - 1);
+      await seekTo(srcT); drawFrame(srcT);
+      const frame = new VideoFrame(canvas, { timestamp: Math.round(i * 1e6 / FPS), duration: Math.round(1e6 / FPS) });
+      enc.encode(frame, { keyFrame: i % 60 === 0 }); frame.close();
+      while (enc.encodeQueueSize > 6) await sleep(5);
+      if (i % 5 === 0) {
+        $('prog').value = i / N;
+        const el = (performance.now() - started) / 1000, eta = i ? el / i * (N - i) : 0;
+        setStatus(`Rendering frame ${i + 1} of ${N}` + (i > 10 ? ` · about ${fmtDur(eta)} left` : ''));
+      }
+    }
+    await enc.flush(); enc.close(); muxer.finalize();
+    const blob = new Blob([target.buffer], { type: 'video/mp4' }), url = URL.createObjectURL(blob);
+    const name = mediaName() + '_strava.mp4';
+    const a = $('download'); a.href = url; a.download = name; a.textContent = `Download ${name} (${(blob.size / 1048576).toFixed(1)} MB)`; a.style.display = 'inline';
+    const r = $('result'); r.src = url; r.style.display = 'block';
+    $('prog').value = 1;
+    const used = S.kind === 'image' ? photosIn(t0, t1) : 0;
+    setStatus(`Done: ${len} s, ${W}×${H}, ${(blob.size / 1048576).toFixed(1)} MB.` +
+      (S.kind === 'image' && used < N ? ` Only ${used} photos for ${N} frames, so some repeat; a shorter clip looks smoother.` : ''), 'ok');
+  } catch (e) { setStatus('Render failed: ' + (e.message || e), 'err'); }
+  S.busy = false; lock(false);
+}
+const photosIn = (a, b) => photoIndexAt(b) - photoIndexAt(a) + 1;
+function lock(on) { for (const id of ['renderBtn', 'autoSync', 'videoIn', 'folderIn', 'trackIn']) $(id).disabled = on || (id === 'renderBtn' && !S.track) || (id === 'autoSync' && !S.track?.has.spd); }
+
+// ---------- wiring ----------
+function mediaLoaded() {
+  defaultOffset(); updateFileInfo(); setStatus('');
+  $('scrub').max = Math.max(0.1, S.total - 0.1).toFixed(1); $('scrub').value = Math.min(S.total / 2, 60).toFixed(1);
+  refresh();
+}
+async function useMediaFiles(files) {
+  setStatus('Reading files…'); S.scan = null; S.picked = null;
+  try { await loadMedia(files, p => setStatus(`Reading photo timestamps ${Math.round(100 * p)} %`)); mediaLoaded(); }
+  catch (err) { setStatus(err.message, 'err'); }
+}
+async function useFolder(files) {
+  setStatus('Scanning folder…'); S.picked = null;
+  try {
+    await scanFolder(files);
+    const n = S.scan.found.length;
+    if (!S.track) { updateFileInfo(); setStatus(`Folder scanned: ${S.scan.nImg} photos and ${S.scan.nVid} videos in ${n} series. Now choose the activity file; the matching series is picked automatically.`, 'ok'); return; }
+    await applyScan(); mediaLoaded();
+  } catch (err) { setStatus(err.message, 'err'); }
+}
+async function useTrack(text) {
+  try {
+    S.track = parseTrack(text);
+    if (S.scan && !S.picked) { setStatus('Picking the matching photos or video…'); await applyScan(); mediaLoaded(); return; }
+    defaultOffset(); updateFileInfo(); setStatus(''); refresh();
+  } catch (err) { if (!S.track) updateFileInfo(); setStatus(err.message, 'err'); }
+}
+$('videoIn').addEventListener('change', e => { if (e.target.files.length) useMediaFiles(e.target.files); });
+$('folderIn').addEventListener('change', e => { if (e.target.files.length) useFolder(e.target.files); });
+$('trackIn').addEventListener('change', async e => { const f = e.target.files[0]; if (f) useTrack(await f.text()); });
+$('scrub').addEventListener('input', e => preview(+e.target.value));
+for (const b of document.querySelectorAll('.offset button[data-d]')) b.addEventListener('click', () => { $('offset').value = ((+$('offset').value || 0) + +b.dataset.d).toFixed(1); refresh(); });
+for (const id of ['offset', 'optMap', 'optHr', 'optSpd', 'optPwr', 'optTime', 'optFlip', 'optHideEnd', 'privacy']) $(id).addEventListener('input', refresh);
+$('autoSync').addEventListener('click', autoSync);
+$('renderBtn').addEventListener('click', render);
+$('autoSync').disabled = true;
+// test hook: window.__clip exposes state for automated checks
+window.__clip = S; window.__api = { exifTime, useMediaFiles, useFolder, useTrack, autoSync, render };
+</script>
+</body>
+</html>
