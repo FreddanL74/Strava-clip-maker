@@ -87,11 +87,13 @@
       <h2>2. What to show</h2>
       <div class="checks" id="checks">
         <label><input type="checkbox" id="optMap" checked> GPS trace (map) <small data-for="map"></small></label>
+        <label><input type="checkbox" id="optBasemap" checked> OpenStreetMap background (requires internet)</label>
         <label><input type="checkbox" id="optHr" checked> Heart rate <small data-for="hr"></small></label>
         <label><input type="checkbox" id="optSpd" checked> Speed <small data-for="spd"></small></label>
         <label><input type="checkbox" id="optPwr" checked> Power <small data-for="pwr"></small></label>
         <label><input type="checkbox" id="optTime" checked> Time of day</label>
       </div>
+      <p class="muted">Map background uses © OpenStreetMap contributors. Tiles are loaded once for the route and embedded in the exported video. If unavailable, the original plain GPS map is used.</p>
       <hr>
       <div class="checks">
         <label><input type="checkbox" id="optFlip"> Rotate video 180° (camera upside down)</label>
@@ -424,9 +426,39 @@ function parseTrack(text) {
   };
 }
 
+// ---------- static OpenStreetMap background ----------
+// Fetch only the handful of tiles visible in the fixed map panel, once per route.
+// Tile images are reused for every video frame; no per-frame tile requests.
+const mapTiles = new Map();
+const mercY = lat => { const r = Math.max(-85.0511, Math.min(85.0511, lat)) * Math.PI / 180; return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2; };
+const mercX = lon => (lon + 180) / 360;
+function loadMapTile(z, x, y) {
+  const n = 2 ** z;
+  if (y < 0 || y >= n) return Promise.resolve(null);
+  const wrappedX = ((x % n) + n) % n;
+  const key = `${z}/${wrappedX}/${y}`;
+  if (mapTiles.has(key)) return mapTiles.get(key);
+  const job = new Promise(resolve => {
+    const img = new Image(); img.crossOrigin = 'anonymous';
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = `https://tile.openstreetmap.org/${key}.png`;
+  });
+  mapTiles.set(key, job);
+  return job;
+}
+async function prepareMapTiles() {
+  const m = S.layout?.map;
+  if (!m?.basemap) return;
+  const jobs = m.tiles.map(t => loadMapTile(m.zoom, t.tx, t.ty));
+  const images = await Promise.all(jobs);
+  if (S.layout?.map !== m) return;
+  m.tiles.forEach((t, i) => { t.img = images[i]; });
+  m.ready = true;
+}
 // ---------- layout ----------
 const opt = () => ({
-  map: $('optMap').checked && !!S.track?.has.map, hr: $('optHr').checked && !!S.track?.has.hr,
+  map: $('optMap').checked && !!S.track?.has.map, basemap: $('optBasemap').checked, hr: $('optHr').checked && !!S.track?.has.hr,
   spd: $('optSpd').checked && !!S.track?.has.spd, pwr: $('optPwr').checked && !!S.track?.has.pwr,
   time: $('optTime').checked, flip: $('optFlip').checked, hideEnd: $('optHideEnd').checked,
   privacy: Math.max(0, +$('privacy').value || 0)
@@ -443,16 +475,31 @@ function buildLayout() {
     const kx = Math.cos((minLat + maxLat) / 2 * Math.PI / 180);
     const spanX = Math.max(1e-6, (maxLon - minLon) * kx), spanY = Math.max(1e-6, maxLat - minLat);
     const scale = Math.min((maxW - 2 * pad) / spanX, (maxH - 2 * pad) / spanY);
-    const h = Math.round(spanY * scale + 2 * pad), offX = x + (maxW - spanX * scale) / 2;
+    const h = Math.max(90, Math.round(spanY * scale + 2 * pad));
     const px = new Float64Array(g.n), py = new Float64Array(g.n), hidden = new Uint8Array(g.n);
     const R2 = o.privacy * o.privacy, near = (i, j) => { const dy = (g.lat[i] - g.lat[j]) * 111320, dx = (g.lon[i] - g.lon[j]) * 111320 * kx; return dx * dx + dy * dy < R2; };
-    for (let i = 0; i < g.n; i++) {
-      px[i] = offX + (g.lon[i] - minLon) * kx * scale; py[i] = y + pad + (maxLat - g.lat[i]) * scale;
-      hidden[i] = o.privacy > 0 && (near(i, 0) || (o.hideEnd && near(i, g.n - 1))) ? 1 : 0;
+    let tiles = [], zoom = 0;
+    if (o.basemap) {
+      const mx0 = mercX(minLon), mx1 = mercX(maxLon), my0 = mercY(maxLat), my1 = mercY(minLat);
+      for (zoom = 18; zoom > 0; zoom--) {
+        const world = 256 * 2 ** zoom;
+        if ((mx1 - mx0) * world <= maxW - 2 * pad && (my1 - my0) * world <= h - 2 * pad) break;
+      }
+      const world = 256 * 2 ** zoom;
+      const cx = (mx0 + mx1) / 2 * world, cy = (my0 + my1) / 2 * world;
+      const left = cx - maxW / 2, upper = cy - h / 2;
+      for (let i = 0; i < g.n; i++) { px[i] = x + mercX(g.lon[i]) * world - left; py[i] = y + mercY(g.lat[i]) * world - upper; }
+      const x0 = Math.floor(left / 256), x1 = Math.floor((left + maxW - 1) / 256);
+      const y0 = Math.floor(upper / 256), y1 = Math.floor((upper + h - 1) / 256);
+      for (let ty = y0; ty <= y1; ty++) for (let tx = x0; tx <= x1; tx++) tiles.push({ tx, ty, x: x + tx * 256 - left, y: y + ty * 256 - upper, img: null });
+    } else {
+      const offX = x + (maxW - spanX * scale) / 2;
+      for (let i = 0; i < g.n; i++) { px[i] = offX + (g.lon[i] - minLon) * kx * scale; py[i] = y + pad + (maxLat - g.lat[i]) * scale; }
     }
+    for (let i = 0; i < g.n; i++) hidden[i] = o.privacy > 0 && (near(i, 0) || (o.hideEnd && near(i, g.n - 1))) ? 1 : 0;
     const full = new Path2D(); let pen = false;
     for (let i = 0; i < g.n; i++) { if (hidden[i]) { pen = false; continue; } if (pen) full.lineTo(px[i], py[i]); else { full.moveTo(px[i], py[i]); pen = true; } }
-    map = { x, y, w: maxW, h, px, py, hidden, full };
+    map = { x, y, w: maxW, h, px, py, hidden, full, basemap: o.basemap, zoom, tiles, ready: false };
     tilesY = y + h + 30;
   }
   const gap = 20, tw = metrics.length ? (1000 - gap * (metrics.length - 1)) / metrics.length : 0;
@@ -480,6 +527,14 @@ function drawFrame(srcT) {
   if (L.map) {
     const m = L.map;
     ctx.fillStyle = '#262626'; roundRect(m.x, m.y, m.w, m.h, 18); ctx.fill();
+    if (m.basemap) {
+      ctx.save(); roundRect(m.x, m.y, m.w, m.h, 18); ctx.clip();
+      for (const t of m.tiles) if (t.img) ctx.drawImage(t.img, t.x, t.y, 256, 256);
+      ctx.restore();
+      ctx.fillStyle = 'rgba(0,0,0,.62)'; ctx.fillRect(m.x + 8, m.y + m.h - 32, 338, 25);
+      ctx.font = '20px Arial, sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#FFFFFF'; ctx.fillText('© OpenStreetMap contributors', m.x + 16, m.y + m.h - 19);
+    }
     ctx.lineJoin = 'round'; ctx.lineCap = 'round';
     ctx.strokeStyle = '#8c8c8c'; ctx.lineWidth = 4; ctx.stroke(m.full);
     const gi = Math.min(g.n - 1, Math.floor(Math.max(0, gs)));
@@ -532,6 +587,7 @@ async function preview(t) {
 function refresh() {
   if (!hasMedia()) return;
   buildLayout();
+  if (S.layout.map?.basemap) prepareMapTiles().then(() => { if (!S.busy) preview(+$('scrub').value); });
   $('scrub').max = Math.max(0.1, S.total - 0.1).toFixed(1); $('scrub').disabled = false;
   $('renderBtn').disabled = !S.track;
   $('autoSync').disabled = !(S.track?.has.spd);
@@ -658,6 +714,7 @@ async function render() {
   const cfg = await pickEncoderConfig();
   if (!cfg) { setStatus('No H.264 encoder available in this browser.', 'err'); return; }
   buildLayout();
+  if (S.layout.map?.basemap) { setStatus('Loading static map tiles…'); await prepareMapTiles(); }
   const len = Math.min(60, Math.max(3, +$('clipLen').value || 29.5)), N = Math.round(len * FPS);
   const t0 = Math.max(0, +$('trimStart').value || 0), t1 = S.total - Math.max(0, +$('trimEnd').value || 0) - 0.05;
   if (t1 - t0 < 1) { setStatus('Nothing left of the video after trimming.', 'err'); return; }
@@ -730,7 +787,7 @@ $('folderIn').addEventListener('change', e => { if (e.target.files.length) useFo
 $('trackIn').addEventListener('change', async e => { const f = e.target.files[0]; if (f) useTrack(await f.text()); });
 $('scrub').addEventListener('input', e => preview(+e.target.value));
 for (const b of document.querySelectorAll('.offset button[data-d]')) b.addEventListener('click', () => { $('offset').value = ((+$('offset').value || 0) + +b.dataset.d).toFixed(1); refresh(); });
-for (const id of ['offset', 'optMap', 'optHr', 'optSpd', 'optPwr', 'optTime', 'optFlip', 'optHideEnd', 'privacy']) $(id).addEventListener('input', refresh);
+for (const id of ['offset', 'optBasemap', 'optMap', 'optHr', 'optSpd', 'optPwr', 'optTime', 'optFlip', 'optHideEnd', 'privacy']) $(id).addEventListener('input', refresh);
 $('autoSync').addEventListener('click', autoSync);
 $('renderBtn').addEventListener('click', render);
 $('autoSync').disabled = true;
