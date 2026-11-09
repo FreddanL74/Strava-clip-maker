@@ -88,12 +88,15 @@
       <div class="checks" id="checks">
         <label><input type="checkbox" id="optMap" checked> GPS trace (map) <small data-for="map"></small></label>
         <label><input type="checkbox" id="optBasemap" checked> OpenStreetMap background (requires internet)</label>
+        <label>Map movement
+          <select id="mapMode"><option value="static">Static — whole route</option><option value="follow">Animated — follow position</option></select>
+        </label>
         <label><input type="checkbox" id="optHr" checked> Heart rate <small data-for="hr"></small></label>
         <label><input type="checkbox" id="optSpd" checked> Speed <small data-for="spd"></small></label>
         <label><input type="checkbox" id="optPwr" checked> Power <small data-for="pwr"></small></label>
         <label><input type="checkbox" id="optTime" checked> Time of day</label>
       </div>
-      <p class="muted">Map background uses © OpenStreetMap contributors. Tiles are loaded once for the route and embedded in the exported video. If unavailable, the original plain GPS map is used.</p>
+      <p class="muted">Map background uses © OpenStreetMap contributors. In animated mode the map follows the GPS position. Only required tiles are cached for the selected clip. If unavailable, the original plain GPS map is used.</p>
       <hr>
       <div class="checks">
         <label><input type="checkbox" id="optFlip"> Rotate video 180° (camera upside down)</label>
@@ -430,6 +433,7 @@ function parseTrack(text) {
 // Fetch only the handful of tiles visible in the fixed map panel, once per route.
 // Tile images are reused for every video frame; no per-frame tile requests.
 const mapTiles = new Map();
+const loadedTiles = new Map();
 const mercY = lat => { const r = Math.max(-85.0511, Math.min(85.0511, lat)) * Math.PI / 180; return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2; };
 const mercX = lon => (lon + 180) / 360;
 function loadMapTile(z, x, y) {
@@ -440,16 +444,39 @@ function loadMapTile(z, x, y) {
   if (mapTiles.has(key)) return mapTiles.get(key);
   const job = new Promise(resolve => {
     const img = new Image(); img.crossOrigin = 'anonymous';
-    img.onload = () => resolve(img);
+    img.onload = () => { loadedTiles.set(key, img); resolve(img); };
     img.onerror = () => resolve(null);
     img.src = `https://tile.openstreetmap.org/${key}.png`;
   });
   mapTiles.set(key, job);
   return job;
 }
+function followTiles(m, gs) {
+  const g = S.track, i = Math.max(0, Math.min(g.n - 1, Math.floor(gs)));
+  // Never center the basemap on coordinates hidden by the privacy setting.
+  let safe = i;
+  if (m.hidden[safe]) {
+    while (safe < g.n - 1 && m.hidden[safe]) safe++;
+    if (m.hidden[safe]) { safe = i; while (safe > 0 && m.hidden[safe]) safe--; }
+  }
+  const cx = mercX(g.lon[safe]) * m.world;
+  const cy = mercY(g.lat[safe]) * m.world;
+  const left = cx - m.w / 2, upper = cy - m.h / 2;
+  const result = [];
+  for (let ty = Math.floor(upper / 256); ty <= Math.floor((upper + m.h - 1) / 256); ty++)
+    for (let tx = Math.floor(left / 256); tx <= Math.floor((left + m.w - 1) / 256); tx++)
+      result.push({ tx, ty, x: m.x + tx * 256 - left, y: m.y + ty * 256 - upper,
+        img: null, key: `${m.zoom}/${((tx % (2 ** m.zoom)) + 2 ** m.zoom) % (2 ** m.zoom)}/${ty}` });
+  return { tiles: result, left, upper };
+}
+async function prepareFollowTiles(m, srcT) {
+  const gs = srcT + (+$('offset').value || 0);
+  const f = followTiles(m, gs);
+  await Promise.all(f.tiles.map(t => loadMapTile(m.zoom, t.tx, t.ty)));
+}
 async function prepareMapTiles() {
   const m = S.layout?.map;
-  if (!m?.basemap) return;
+  if (!m?.basemap || m.follow) return;
   const jobs = m.tiles.map(t => loadMapTile(m.zoom, t.tx, t.ty));
   const images = await Promise.all(jobs);
   if (S.layout?.map !== m) return;
@@ -458,7 +485,7 @@ async function prepareMapTiles() {
 }
 // ---------- layout ----------
 const opt = () => ({
-  map: $('optMap').checked && !!S.track?.has.map, basemap: $('optBasemap').checked, hr: $('optHr').checked && !!S.track?.has.hr,
+  map: $('optMap').checked && !!S.track?.has.map, basemap: $('optBasemap').checked, follow: $('mapMode').value === 'follow', hr: $('optHr').checked && !!S.track?.has.hr,
   spd: $('optSpd').checked && !!S.track?.has.spd, pwr: $('optPwr').checked && !!S.track?.has.pwr,
   time: $('optTime').checked, flip: $('optFlip').checked, hideEnd: $('optHideEnd').checked,
   privacy: Math.max(0, +$('privacy').value || 0)
@@ -485,6 +512,7 @@ function buildLayout() {
         const world = 256 * 2 ** zoom;
         if ((mx1 - mx0) * world <= maxW - 2 * pad && (my1 - my0) * world <= h - 2 * pad) break;
       }
+      if (o.follow) zoom = 13; // readable street-level view, with bounded tile demand
       const world = 256 * 2 ** zoom;
       const cx = (mx0 + mx1) / 2 * world, cy = (my0 + my1) / 2 * world;
       const left = cx - maxW / 2, upper = cy - h / 2;
@@ -499,8 +527,9 @@ function buildLayout() {
     for (let i = 0; i < g.n; i++) hidden[i] = o.privacy > 0 && (near(i, 0) || (o.hideEnd && near(i, g.n - 1))) ? 1 : 0;
     const full = new Path2D(); let pen = false;
     for (let i = 0; i < g.n; i++) { if (hidden[i]) { pen = false; continue; } if (pen) full.lineTo(px[i], py[i]); else { full.moveTo(px[i], py[i]); pen = true; } }
-    map = { x, y, w: maxW, h, px, py, hidden, full, basemap: o.basemap, zoom, tiles, ready: false };
-    tilesY = y + h + 30;
+    map = { x, y, w: maxW, h: o.follow && o.basemap ? maxH : h, px, py, hidden, full,
+      basemap: o.basemap, follow: o.follow && o.basemap, zoom, world: 256 * 2 ** zoom, tiles, ready: false };
+    tilesY = y + map.h + 30;
   }
   const gap = 20, tw = metrics.length ? (1000 - gap * (metrics.length - 1)) / metrics.length : 0;
   S.layout = { o, map, tiles: metrics.map((k, i) => ({ k, x: 40 + i * (tw + gap), y: tilesY, w: tw, h: tileH })) };
@@ -522,32 +551,58 @@ function drawFrame(srcT) {
   ctx.drawImage(c.src, (c.w - side) / 2, (c.h - side) / 2, side, side, 0, VIDEO_Y, VIDEO_S, VIDEO_S);
   ctx.restore();
   if (!g) return;
+  if (L.map?.follow) { for (const t of followTiles(L.map, gs).tiles) if (!mapTiles.has(t.key)) loadMapTile(L.map.zoom, t.tx, t.ty).then(() => { if (!S.busy) preview(+$('scrub').value); }); }
   const inData = gs >= 0 && gs <= g.n - 1;
   // map
   if (L.map) {
     const m = L.map;
     ctx.fillStyle = '#262626'; roundRect(m.x, m.y, m.w, m.h, 18); ctx.fill();
+    const f = m.follow ? followTiles(m, gs) : null;
     if (m.basemap) {
       ctx.save(); roundRect(m.x, m.y, m.w, m.h, 18); ctx.clip();
-      for (const t of m.tiles) if (t.img) ctx.drawImage(t.img, t.x, t.y, 256, 256);
+      const visibleTiles = f ? f.tiles : m.tiles;
+      for (const t of visibleTiles) {
+        const img = f ? mapTiles.get(t.key) : null;
+        if (f) {
+          // cached promises resolve to images; resolved images are tracked separately
+          if (loadedTiles.has(t.key)) ctx.drawImage(loadedTiles.get(t.key), t.x, t.y, 256, 256);
+        } else if (t.img) ctx.drawImage(t.img, t.x, t.y, 256, 256);
+      }
       ctx.restore();
       ctx.fillStyle = 'rgba(0,0,0,.62)'; ctx.fillRect(m.x + 8, m.y + m.h - 32, 338, 25);
       ctx.font = '20px Arial, sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
       ctx.fillStyle = '#FFFFFF'; ctx.fillText('© OpenStreetMap contributors', m.x + 16, m.y + m.h - 19);
     }
+    ctx.save(); roundRect(m.x, m.y, m.w, m.h, 18); ctx.clip();
     ctx.lineJoin = 'round'; ctx.lineCap = 'round';
-    ctx.strokeStyle = '#8c8c8c'; ctx.lineWidth = 4; ctx.stroke(m.full);
     const gi = Math.min(g.n - 1, Math.floor(Math.max(0, gs)));
-    if (gs > 0) {
-      ctx.beginPath(); let pen = false;
-      for (let i = 0; i <= gi; i++) { if (m.hidden[i]) { pen = false; continue; } if (pen) ctx.lineTo(m.px[i], m.py[i]); else { ctx.moveTo(m.px[i], m.py[i]); pen = true; } }
-      if (pen && inData && gi + 1 < g.n && !m.hidden[gi + 1]) ctx.lineTo(valueAt(m.px, gs), valueAt(m.py, gs));
-      ctx.strokeStyle = '#FF8C00'; ctx.lineWidth = 9; ctx.stroke();
+    if (m.follow) {
+      // Show the recent 90 seconds of travel instead of shrinking the entire route.
+      const path = new Path2D(), first = Math.max(0, gi - 90);
+      let pen = false;
+      for (let i = first; i <= gi; i++) {
+        if (m.hidden[i]) { pen = false; continue; }
+        const x = m.x + mercX(g.lon[i]) * m.world - f.left;
+        const y = m.y + mercY(g.lat[i]) * m.world - f.upper;
+        if (pen) path.lineTo(x, y); else { path.moveTo(x, y); pen = true; }
+      }
+      ctx.strokeStyle = '#FF8C00'; ctx.lineWidth = 9; ctx.stroke(path);
+    } else {
+      ctx.strokeStyle = '#8c8c8c'; ctx.lineWidth = 4; ctx.stroke(m.full);
+      if (gs > 0) {
+        ctx.beginPath(); let pen = false;
+        for (let i = 0; i <= gi; i++) { if (m.hidden[i]) { pen = false; continue; } if (pen) ctx.lineTo(m.px[i], m.py[i]); else { ctx.moveTo(m.px[i], m.py[i]); pen = true; } }
+        if (pen && inData && gi + 1 < g.n && !m.hidden[gi + 1]) ctx.lineTo(valueAt(m.px, gs), valueAt(m.py, gs));
+        ctx.strokeStyle = '#FF8C00'; ctx.lineWidth = 9; ctx.stroke();
+      }
     }
     if (inData && !m.hidden[gi]) {
-      ctx.beginPath(); ctx.arc(valueAt(m.px, gs), valueAt(m.py, gs), 14, 0, Math.PI * 2);
+      const dotX = m.follow ? m.x + mercX(valueAt(g.lon, gs)) * m.world - f.left : valueAt(m.px, gs);
+      const dotY = m.follow ? m.y + mercY(valueAt(g.lat, gs)) * m.world - f.upper : valueAt(m.py, gs);
+      ctx.beginPath(); ctx.arc(dotX, dotY, 14, 0, Math.PI * 2);
       ctx.fillStyle = '#FF2020'; ctx.fill(); ctx.lineWidth = 5; ctx.strokeStyle = '#FFFFFF'; ctx.stroke();
     }
+    ctx.restore();
   }
   // stat tiles
   for (const t of L.tiles) {
@@ -587,7 +642,11 @@ async function preview(t) {
 function refresh() {
   if (!hasMedia()) return;
   buildLayout();
-  if (S.layout.map?.basemap) prepareMapTiles().then(() => { if (!S.busy) preview(+$('scrub').value); });
+  if (S.layout.map?.basemap) {
+    const m = S.layout.map;
+    (m.follow ? prepareFollowTiles(m, +$('scrub').value) : prepareMapTiles())
+      .then(() => { if (!S.busy) preview(+$('scrub').value); });
+  }
   $('scrub').max = Math.max(0.1, S.total - 0.1).toFixed(1); $('scrub').disabled = false;
   $('renderBtn').disabled = !S.track;
   $('autoSync').disabled = !(S.track?.has.spd);
@@ -714,7 +773,27 @@ async function render() {
   const cfg = await pickEncoderConfig();
   if (!cfg) { setStatus('No H.264 encoder available in this browser.', 'err'); return; }
   buildLayout();
-  if (S.layout.map?.basemap) { setStatus('Loading static map tiles…'); await prepareMapTiles(); }
+  if (S.layout.map?.basemap) {
+    const m = S.layout.map;
+    if (m.follow) {
+      setStatus('Loading map tiles for animated preview…');
+      // Preload only tiles needed along the chosen clip, with a strict request cap.
+      const a = Math.max(0, +$('trimStart').value || 0);
+      const b = S.total - Math.max(0, +$('trimEnd').value || 0) - .05;
+      const required = new Map();
+      const steps = Math.max(32, Math.ceil(b - a));
+      for (let j = 0; j <= steps; j++) {
+        const srcT = a + (b - a) * j / steps;
+        for (const t of followTiles(m, srcT + (+$('offset').value || 0)).tiles)
+          required.set(t.key, t);
+      }
+      if (required.size > 180) {
+        setStatus('Animated map needs too many tiles. Shorten the source range or choose Static map.', 'err');
+        return;
+      }
+      await Promise.all([...required.values()].map(t => loadMapTile(m.zoom, t.tx, t.ty)));
+    } else { setStatus('Loading static map tiles…'); await prepareMapTiles(); }
+  }
   const len = Math.min(60, Math.max(3, +$('clipLen').value || 29.5)), N = Math.round(len * FPS);
   const t0 = Math.max(0, +$('trimStart').value || 0), t1 = S.total - Math.max(0, +$('trimEnd').value || 0) - 0.05;
   if (t1 - t0 < 1) { setStatus('Nothing left of the video after trimming.', 'err'); return; }
@@ -787,7 +866,7 @@ $('folderIn').addEventListener('change', e => { if (e.target.files.length) useFo
 $('trackIn').addEventListener('change', async e => { const f = e.target.files[0]; if (f) useTrack(await f.text()); });
 $('scrub').addEventListener('input', e => preview(+e.target.value));
 for (const b of document.querySelectorAll('.offset button[data-d]')) b.addEventListener('click', () => { $('offset').value = ((+$('offset').value || 0) + +b.dataset.d).toFixed(1); refresh(); });
-for (const id of ['offset', 'optBasemap', 'optMap', 'optHr', 'optSpd', 'optPwr', 'optTime', 'optFlip', 'optHideEnd', 'privacy']) $(id).addEventListener('input', refresh);
+for (const id of ['offset', 'optBasemap', 'mapMode', 'optMap', 'optHr', 'optSpd', 'optPwr', 'optTime', 'optFlip', 'optHideEnd', 'privacy']) $(id).addEventListener('input', refresh);
 $('autoSync').addEventListener('click', autoSync);
 $('renderBtn').addEventListener('click', render);
 $('autoSync').disabled = true;
