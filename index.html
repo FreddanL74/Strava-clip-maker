@@ -92,6 +92,9 @@
           <select id="mapMode"><option value="static">Static — whole route</option><option value="follow">Animated — follow position</option></select>
         </label>
         <label><input type="checkbox" id="optRotateMap"> Rotate following map in direction of travel</label>
+        <label>Following map zoom <input type="range" id="mapZoom" min="10" max="15" step="1" value="12"> <output id="mapZoomValue">12</output></label>
+        <label>Rider vertical position <input type="range" id="mapAnchor" min="30" max="75" step="5" value="65"> <output id="mapAnchorValue">65%</output></label>
+        <label><input type="checkbox" id="optSmoothMap" checked> Smooth rotation and GPS movement</label>
         <label><input type="checkbox" id="optHr" checked> Heart rate <small data-for="hr"></small></label>
         <label><input type="checkbox" id="optSpd" checked> Speed <small data-for="spd"></small></label>
         <label><input type="checkbox" id="optPwr" checked> Power <small data-for="pwr"></small></label>
@@ -453,40 +456,57 @@ function loadMapTile(z, x, y) {
   mapTiles.set(key, job);
   return job;
 }
-function followTiles(m, gs) {
-  const g = S.track, i = Math.max(0, Math.min(g.n - 1, Math.floor(gs)));
-  // Never center the basemap on coordinates hidden by the privacy setting.
+// Camera coordinates are deterministic functions of activity time, so seeking
+// and MP4 rendering give the same view, independent of preview frame order.
+function cameraPosition(m, gs) {
+  const g = S.track, i = Math.max(0, Math.min(g.n - 1, Math.round(gs)));
   let safe = i;
   if (m.hidden[safe]) {
     while (safe < g.n - 1 && m.hidden[safe]) safe++;
     if (m.hidden[safe]) { safe = i; while (safe > 0 && m.hidden[safe]) safe--; }
   }
-  const cx = mercX(g.lon[safe]) * m.world;
-  const cy = mercY(g.lat[safe]) * m.world;
-  const left = cx - m.w / 2, upper = cy - m.h / 2;
-  // A rotated rectangular viewport needs a larger square tile coverage.
-  const extra = m.rotate ? (Math.hypot(m.w, m.h) - Math.min(m.w, m.h)) / 2 + 20 : 0;
-  const result = [];
-  for (let ty = Math.floor((upper - extra) / 256); ty <= Math.floor((upper + m.h + extra - 1) / 256); ty++)
-    for (let tx = Math.floor((left - extra) / 256); tx <= Math.floor((left + m.w + extra - 1) / 256); tx++)
-      result.push({ tx, ty, x: m.x + tx * 256 - left, y: m.y + ty * 256 - upper,
-        img: null, key: `${m.zoom}/${((tx % (2 ** m.zoom)) + 2 ** m.zoom) % (2 ** m.zoom)}/${ty}` });
-  return { tiles: result, left, upper };
-}
-// Bearing from a five-second displacement, with fallback to a longer interval
-// when the rider is stopped. Canvas rotation is opposite to compass bearing.
-function mapBearing(m, gs) {
-  const g = S.track;
-  if (!g || !m.rotate) return 0;
-  const i = Math.max(0, Math.min(g.n - 1, Math.round(gs)));
-  for (const dt of [5, 12, 30]) {
-    const a = Math.max(0, i - dt), b = Math.min(g.n - 1, i + dt);
-    if (m.hidden[a] || m.hidden[b]) continue;
-    const dx = (mercX(g.lon[b]) - mercX(g.lon[a])) * m.world;
-    const dy = (mercY(g.lat[b]) - mercY(g.lat[a])) * m.world;
-    if (Math.hypot(dx, dy) > 2) return Math.atan2(dx, -dy);
+  if (!m.smooth || m.hidden[i]) return {x:mercX(g.lon[safe])*m.world, y:mercY(g.lat[safe])*m.world};
+  let x=0,y=0,w=0;
+  for(let j=Math.max(0,i-3);j<=Math.min(g.n-1,i+3);j++){
+    if(m.hidden[j]) continue;
+    const k=4-Math.abs(j-i);
+    x+=mercX(g.lon[j])*k;y+=mercY(g.lat[j])*k;w+=k;
   }
-  return 0;
+  return w ? {x:x*m.world/w,y:y*m.world/w} : {x:mercX(g.lon[safe])*m.world,y:mercY(g.lat[safe])*m.world};
+}
+function mapBearing(m, gs) {
+  if (!m.rotate) return 0;
+  const g=S.track, i=Math.max(0,Math.min(g.n-1,Math.round(gs)));
+  // Average displacement vectors, not angles: no wrap discontinuity at north.
+  let sx=0,sy=0,weight=0;
+  const window=m.smooth?12:2, stride=m.smooth?3:1;
+  for(let k=-window;k<=window;k+=stride){
+    const a=Math.max(0,i+k-3),b=Math.min(g.n-1,i+k+3);
+    if(a===b||m.hidden[a]||m.hidden[b])continue;
+    const dx=(mercX(g.lon[b])-mercX(g.lon[a]))*m.world;
+    const dy=(mercY(g.lat[b])-mercY(g.lat[a]))*m.world;
+    const d=Math.hypot(dx,dy);
+    if(d<1.5)continue;
+    const w=1/(1+Math.abs(k)/5);
+    sx+=dx/d*w;sy+=dy/d*w;weight+=w;
+  }
+  return weight && Math.hypot(sx,sy)>0.15 ? Math.atan2(sx,-sy) : 0;
+}
+function followTiles(m, gs) {
+  const p=cameraPosition(m,gs), anchorY=m.y+m.h*m.anchor;
+  const left=p.x-m.w/2,upper=p.y-m.h*m.anchor;
+  // Rotation around rider anchor. Cover the full rotated viewport.
+  const extra=m.rotate?Math.hypot(m.w,m.h)+256:0;
+  const result=[];
+  const minX=m.rotate?p.x-extra:p.x-m.w/2;
+  const maxX=m.rotate?p.x+extra:p.x+m.w/2;
+  const minY=m.rotate?p.y-extra:p.y-m.h*m.anchor;
+  const maxY=m.rotate?p.y+extra:p.y+m.h*(1-m.anchor);
+  for(let ty=Math.floor(minY/256);ty<=Math.floor(maxY/256);ty++)
+    for(let tx=Math.floor(minX/256);tx<=Math.floor(maxX/256);tx++)
+      result.push({tx,ty,x:m.x+tx*256-left,y:m.y+ty*256-upper,
+        key:`${m.zoom}/${((tx%(2**m.zoom))+(2**m.zoom))%(2**m.zoom)}/${ty}`});
+  return {tiles:result,left,upper,anchorX:m.x+m.w/2,anchorY};
 }
 async function prepareFollowTiles(m, srcT) {
   const gs = srcT + (+$('offset').value || 0);
@@ -504,7 +524,7 @@ async function prepareMapTiles() {
 }
 // ---------- layout ----------
 const opt = () => ({
-  map: $('optMap').checked && !!S.track?.has.map, basemap: $('optBasemap').checked, follow: $('mapMode').value === 'follow', rotate: $('optRotateMap').checked, hr: $('optHr').checked && !!S.track?.has.hr,
+  map: $('optMap').checked && !!S.track?.has.map, basemap: $('optBasemap').checked, follow: $('mapMode').value === 'follow', rotate: $('optRotateMap').checked, smooth: $('optSmoothMap').checked, zoomLevel: +$('mapZoom').value, anchor: +$('mapAnchor').value / 100, hr: $('optHr').checked && !!S.track?.has.hr,
   spd: $('optSpd').checked && !!S.track?.has.spd, pwr: $('optPwr').checked && !!S.track?.has.pwr,
   time: $('optTime').checked, flip: $('optFlip').checked, hideEnd: $('optHideEnd').checked,
   privacy: Math.max(0, +$('privacy').value || 0)
@@ -531,7 +551,7 @@ function buildLayout() {
         const world = 256 * 2 ** zoom;
         if ((mx1 - mx0) * world <= maxW - 2 * pad && (my1 - my0) * world <= h - 2 * pad) break;
       }
-      if (o.follow) zoom = 12; // fewer tiles to reduce load on public OSM server
+      if (o.follow) zoom = o.zoomLevel;
       const world = 256 * 2 ** zoom;
       const cx = (mx0 + mx1) / 2 * world, cy = (my0 + my1) / 2 * world;
       const left = cx - maxW / 2, upper = cy - h / 2;
@@ -547,7 +567,7 @@ function buildLayout() {
     const full = new Path2D(); let pen = false;
     for (let i = 0; i < g.n; i++) { if (hidden[i]) { pen = false; continue; } if (pen) full.lineTo(px[i], py[i]); else { full.moveTo(px[i], py[i]); pen = true; } }
     map = { x, y, w: maxW, h: o.follow && o.basemap ? maxH : h, px, py, hidden, full,
-      basemap: o.basemap, follow: o.follow && o.basemap, rotate: o.rotate && o.follow && o.basemap, zoom, world: 256 * 2 ** zoom, tiles, ready: false };
+      basemap: o.basemap, follow: o.follow && o.basemap, rotate: o.rotate && o.follow && o.basemap, smooth: o.smooth, anchor: o.anchor, zoom, world: 256 * 2 ** zoom, tiles, ready: false };
     tilesY = y + map.h + 30;
   }
   const gap = 20, tw = metrics.length ? (1000 - gap * (metrics.length - 1)) / metrics.length : 0;
@@ -580,9 +600,9 @@ function drawFrame(srcT) {
     if (m.basemap) {
       ctx.save(); roundRect(m.x, m.y, m.w, m.h, 18); ctx.clip();
       if (m.rotate) {
-        ctx.translate(m.x + m.w / 2, m.y + m.h / 2);
+        ctx.translate(f.anchorX, f.anchorY);
         ctx.rotate(-mapBearing(m, gs));
-        ctx.translate(-(m.x + m.w / 2), -(m.y + m.h / 2));
+        ctx.translate(-f.anchorX, -f.anchorY);
       }
       const visibleTiles = f ? f.tiles : m.tiles;
       for (const t of visibleTiles) {
@@ -602,9 +622,9 @@ function drawFrame(srcT) {
     }
     ctx.save(); roundRect(m.x, m.y, m.w, m.h, 18); ctx.clip();
     if (m.rotate) {
-      ctx.translate(m.x + m.w / 2, m.y + m.h / 2);
+      ctx.translate(f.anchorX, f.anchorY);
       ctx.rotate(-mapBearing(m, gs));
-      ctx.translate(-(m.x + m.w / 2), -(m.y + m.h / 2));
+      ctx.translate(-f.anchorX, -f.anchorY);
     }
     ctx.lineJoin = 'round'; ctx.lineCap = 'round';
     const gi = Math.min(g.n - 1, Math.floor(Math.max(0, gs)));
@@ -635,8 +655,8 @@ function drawFrame(srcT) {
     }
     ctx.restore();
     if (inData && !m.hidden[gi]) {
-      const dotX = m.follow ? m.x + mercX(valueAt(g.lon, gs)) * m.world - f.left : valueAt(m.px, gs);
-      const dotY = m.follow ? m.y + mercY(valueAt(g.lat, gs)) * m.world - f.upper : valueAt(m.py, gs);
+      const dotX = m.follow ? f.anchorX : valueAt(m.px, gs);
+      const dotY = m.follow ? f.anchorY : valueAt(m.py, gs);
       ctx.beginPath(); ctx.arc(dotX, dotY, 14, 0, Math.PI * 2);
       ctx.fillStyle = '#FF2020'; ctx.fill(); ctx.lineWidth = 5; ctx.strokeStyle = '#FFFFFF'; ctx.stroke();
     }
@@ -684,6 +704,8 @@ function refresh() {
     (m.follow ? prepareFollowTiles(m, +$('scrub').value) : prepareMapTiles())
       .then(() => { if (!S.busy) preview(+$('scrub').value); });
   }
+  $('mapZoomValue').textContent = $('mapZoom').value;
+  $('mapAnchorValue').textContent = $('mapAnchor').value + '%';
   $('scrub').max = Math.max(0.1, S.total - 0.1).toFixed(1); $('scrub').disabled = false;
   $('renderBtn').disabled = !S.track;
   $('autoSync').disabled = !(S.track?.has.spd);
@@ -824,7 +846,7 @@ async function render() {
         for (const t of followTiles(m, srcT + (+$('offset').value || 0)).tiles)
           required.set(t.key, t);
       }
-      if (required.size > 180) {
+      if (required.size > 350) {
         setStatus('Animated map needs too many tiles. Shorten the source range or choose Static map.', 'err');
         return;
       }
