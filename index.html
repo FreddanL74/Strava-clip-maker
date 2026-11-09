@@ -435,6 +435,7 @@ function parseTrack(text) {
 // Tile images are reused for every video frame; no per-frame tile requests.
 const mapTiles = new Map();
 const loadedTiles = new Map();
+const failedTiles = new Set();
 const mercY = lat => { const r = Math.max(-85.0511, Math.min(85.0511, lat)) * Math.PI / 180; return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2; };
 const mercX = lon => (lon + 180) / 360;
 function loadMapTile(z, x, y) {
@@ -445,8 +446,8 @@ function loadMapTile(z, x, y) {
   if (mapTiles.has(key)) return mapTiles.get(key);
   const job = new Promise(resolve => {
     const img = new Image(); img.crossOrigin = 'anonymous';
-    img.onload = () => { loadedTiles.set(key, img); resolve(img); };
-    img.onerror = () => resolve(null);
+    img.onload = () => { loadedTiles.set(key, img); failedTiles.delete(key); resolve(img); };
+    img.onerror = () => { failedTiles.add(key); mapTiles.delete(key); resolve(null); };
     img.src = `https://tile.openstreetmap.org/${key}.png`;
   });
   mapTiles.set(key, job);
@@ -530,7 +531,7 @@ function buildLayout() {
         const world = 256 * 2 ** zoom;
         if ((mx1 - mx0) * world <= maxW - 2 * pad && (my1 - my0) * world <= h - 2 * pad) break;
       }
-      if (o.follow) zoom = 13; // readable street-level view, with bounded tile demand
+      if (o.follow) zoom = 12; // fewer tiles to reduce load on public OSM server
       const world = 256 * 2 ** zoom;
       const cx = (mx0 + mx1) / 2 * world, cy = (my0 + my1) / 2 * world;
       const left = cx - maxW / 2, upper = cy - h / 2;
@@ -585,13 +586,16 @@ function drawFrame(srcT) {
       }
       const visibleTiles = f ? f.tiles : m.tiles;
       for (const t of visibleTiles) {
-        const img = f ? mapTiles.get(t.key) : null;
         if (f) {
           // cached promises resolve to images; resolved images are tracked separately
           if (loadedTiles.has(t.key)) ctx.drawImage(loadedTiles.get(t.key), t.x, t.y, 256, 256);
         } else if (t.img) ctx.drawImage(t.img, t.x, t.y, 256, 256);
       }
       ctx.restore();
+      if (m.follow && !f.tiles.some(t => loadedTiles.has(t.key))) {
+        ctx.fillStyle = '#FFFFFF'; ctx.font = '24px Arial, sans-serif'; ctx.textAlign = 'center';
+        ctx.fillText(f.tiles.some(t => failedTiles.has(t.key)) ? 'Map tiles unavailable — check connection' : 'Loading map tiles…', m.x + m.w / 2, m.y + m.h / 2);
+      }
       ctx.fillStyle = 'rgba(0,0,0,.62)'; ctx.fillRect(m.x + 8, m.y + m.h - 32, 338, 25);
       ctx.font = '20px Arial, sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
       ctx.fillStyle = '#FFFFFF'; ctx.fillText('© OpenStreetMap contributors', m.x + 16, m.y + m.h - 19);
@@ -824,7 +828,15 @@ async function render() {
         setStatus('Animated map needs too many tiles. Shorten the source range or choose Static map.', 'err');
         return;
       }
-      await Promise.all([...required.values()].map(t => loadMapTile(m.zoom, t.tx, t.ty)));
+      // Limit parallel requests to avoid overwhelming the public tile service.
+      const jobs = [...required.values()];
+      for (let k = 0; k < jobs.length; k += 6) {
+        await Promise.all(jobs.slice(k, k + 6).map(t => loadMapTile(m.zoom, t.tx, t.ty)));
+      }
+      if (![...required.keys()].some(key => loadedTiles.has(key))) {
+        setStatus('Map background could not be loaded. Check browser network access and tile server availability.', 'err');
+        return;
+      }
     } else { setStatus('Loading static map tiles…'); await prepareMapTiles(); }
   }
   const len = Math.min(60, Math.max(3, +$('clipLen').value || 29.5)), N = Math.round(len * FPS);
