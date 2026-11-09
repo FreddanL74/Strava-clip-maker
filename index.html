@@ -663,7 +663,8 @@ function drawFrame(srcT) {
   }
   // North compass: screen-fixed in the top-right of the map.
   // Rotate the arrow with the map, but keep its badge and N label upright.
-  if (m.follow && m.basemap) {
+  if (L.map?.follow && L.map.basemap) {
+    const m = L.map;
     const cx = m.x + m.w - 49, cy = m.y + 49;
     const bearing = m.rotate ? mapBearing(m, gs) : 0;
     ctx.save();
