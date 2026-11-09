@@ -661,6 +661,28 @@ function drawFrame(srcT) {
       ctx.fillStyle = '#FF2020'; ctx.fill(); ctx.lineWidth = 5; ctx.strokeStyle = '#FFFFFF'; ctx.stroke();
     }
   }
+  // North compass: screen-fixed in the top-right of the map.
+  // Rotate the arrow with the map, but keep its badge and N label upright.
+  if (m.follow && m.basemap) {
+    const cx = m.x + m.w - 49, cy = m.y + 49;
+    const bearing = m.rotate ? mapBearing(m, gs) : 0;
+    ctx.save();
+    ctx.beginPath(); ctx.arc(cx, cy, 33, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(18,24,30,.78)'; ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,.7)'; ctx.lineWidth = 2; ctx.stroke();
+    ctx.translate(cx, cy);
+    ctx.rotate(-bearing);
+    ctx.beginPath(); ctx.moveTo(0,-24); ctx.lineTo(-9,10); ctx.lineTo(0,5); ctx.lineTo(9,10); ctx.closePath();
+    ctx.fillStyle = '#F05045'; ctx.fill();
+    ctx.beginPath(); ctx.moveTo(0,5); ctx.lineTo(-9,10); ctx.lineTo(0,21); ctx.lineTo(9,10); ctx.closePath();
+    ctx.fillStyle = '#FFFFFF'; ctx.fill();
+    ctx.restore();
+    ctx.save();
+    ctx.fillStyle = '#FFFFFF'; ctx.font = 'bold 17px Arial, sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('N', cx, cy - 43);
+    ctx.restore();
+  }
   // stat tiles
   for (const t of L.tiles) {
     ctx.fillStyle = '#222222'; roundRect(t.x, t.y, t.w, t.h, 18); ctx.fill();
