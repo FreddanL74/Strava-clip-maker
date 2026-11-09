@@ -496,7 +496,7 @@ function followTiles(m, gs) {
   const p=cameraPosition(m,gs), anchorY=m.y+m.h*m.anchor;
   const left=p.x-m.w/2,upper=p.y-m.h*m.anchor;
   // Rotation around rider anchor. Cover the full rotated viewport.
-  const extra=m.rotate?Math.hypot(m.w,m.h)+256:0;
+  const extra=m.rotate?Math.hypot(m.w/2,Math.max(m.anchor,1-m.anchor)*m.h)+32:0;
   const result=[];
   const minX=m.rotate?p.x-extra:p.x-m.w/2;
   const maxX=m.rotate?p.x+extra:p.x+m.w/2;
@@ -933,7 +933,7 @@ $('folderIn').addEventListener('change', e => { if (e.target.files.length) useFo
 $('trackIn').addEventListener('change', async e => { const f = e.target.files[0]; if (f) useTrack(await f.text()); });
 $('scrub').addEventListener('input', e => preview(+e.target.value));
 for (const b of document.querySelectorAll('.offset button[data-d]')) b.addEventListener('click', () => { $('offset').value = ((+$('offset').value || 0) + +b.dataset.d).toFixed(1); refresh(); });
-for (const id of ['offset', 'optBasemap', 'mapMode', 'optRotateMap', 'optMap', 'optHr', 'optSpd', 'optPwr', 'optTime', 'optFlip', 'optHideEnd', 'privacy']) $(id).addEventListener('input', refresh);
+for (const id of ['offset', 'optBasemap', 'mapMode', 'optRotateMap', 'optSmoothMap', 'mapZoom', 'mapAnchor', 'optMap', 'optHr', 'optSpd', 'optPwr', 'optTime', 'optFlip', 'optHideEnd', 'privacy']) $(id).addEventListener('input', refresh);
 $('autoSync').addEventListener('click', autoSync);
 $('renderBtn').addEventListener('click', render);
 $('autoSync').disabled = true;
