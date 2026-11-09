@@ -91,6 +91,7 @@
         <label>Map movement
           <select id="mapMode"><option value="static">Static — whole route</option><option value="follow">Animated — follow position</option></select>
         </label>
+        <label><input type="checkbox" id="optRotateMap"> Rotate following map in direction of travel</label>
         <label><input type="checkbox" id="optHr" checked> Heart rate <small data-for="hr"></small></label>
         <label><input type="checkbox" id="optSpd" checked> Speed <small data-for="spd"></small></label>
         <label><input type="checkbox" id="optPwr" checked> Power <small data-for="pwr"></small></label>
@@ -462,12 +463,29 @@ function followTiles(m, gs) {
   const cx = mercX(g.lon[safe]) * m.world;
   const cy = mercY(g.lat[safe]) * m.world;
   const left = cx - m.w / 2, upper = cy - m.h / 2;
+  // A rotated rectangular viewport needs a larger square tile coverage.
+  const extra = m.rotate ? (Math.hypot(m.w, m.h) - Math.min(m.w, m.h)) / 2 + 20 : 0;
   const result = [];
-  for (let ty = Math.floor(upper / 256); ty <= Math.floor((upper + m.h - 1) / 256); ty++)
-    for (let tx = Math.floor(left / 256); tx <= Math.floor((left + m.w - 1) / 256); tx++)
+  for (let ty = Math.floor((upper - extra) / 256); ty <= Math.floor((upper + m.h + extra - 1) / 256); ty++)
+    for (let tx = Math.floor((left - extra) / 256); tx <= Math.floor((left + m.w + extra - 1) / 256); tx++)
       result.push({ tx, ty, x: m.x + tx * 256 - left, y: m.y + ty * 256 - upper,
         img: null, key: `${m.zoom}/${((tx % (2 ** m.zoom)) + 2 ** m.zoom) % (2 ** m.zoom)}/${ty}` });
   return { tiles: result, left, upper };
+}
+// Bearing from a five-second displacement, with fallback to a longer interval
+// when the rider is stopped. Canvas rotation is opposite to compass bearing.
+function mapBearing(m, gs) {
+  const g = S.track;
+  if (!g || !m.rotate) return 0;
+  const i = Math.max(0, Math.min(g.n - 1, Math.round(gs)));
+  for (const dt of [5, 12, 30]) {
+    const a = Math.max(0, i - dt), b = Math.min(g.n - 1, i + dt);
+    if (m.hidden[a] || m.hidden[b]) continue;
+    const dx = (mercX(g.lon[b]) - mercX(g.lon[a])) * m.world;
+    const dy = (mercY(g.lat[b]) - mercY(g.lat[a])) * m.world;
+    if (Math.hypot(dx, dy) > 2) return Math.atan2(dx, -dy);
+  }
+  return 0;
 }
 async function prepareFollowTiles(m, srcT) {
   const gs = srcT + (+$('offset').value || 0);
@@ -485,7 +503,7 @@ async function prepareMapTiles() {
 }
 // ---------- layout ----------
 const opt = () => ({
-  map: $('optMap').checked && !!S.track?.has.map, basemap: $('optBasemap').checked, follow: $('mapMode').value === 'follow', hr: $('optHr').checked && !!S.track?.has.hr,
+  map: $('optMap').checked && !!S.track?.has.map, basemap: $('optBasemap').checked, follow: $('mapMode').value === 'follow', rotate: $('optRotateMap').checked, hr: $('optHr').checked && !!S.track?.has.hr,
   spd: $('optSpd').checked && !!S.track?.has.spd, pwr: $('optPwr').checked && !!S.track?.has.pwr,
   time: $('optTime').checked, flip: $('optFlip').checked, hideEnd: $('optHideEnd').checked,
   privacy: Math.max(0, +$('privacy').value || 0)
@@ -528,7 +546,7 @@ function buildLayout() {
     const full = new Path2D(); let pen = false;
     for (let i = 0; i < g.n; i++) { if (hidden[i]) { pen = false; continue; } if (pen) full.lineTo(px[i], py[i]); else { full.moveTo(px[i], py[i]); pen = true; } }
     map = { x, y, w: maxW, h: o.follow && o.basemap ? maxH : h, px, py, hidden, full,
-      basemap: o.basemap, follow: o.follow && o.basemap, zoom, world: 256 * 2 ** zoom, tiles, ready: false };
+      basemap: o.basemap, follow: o.follow && o.basemap, rotate: o.rotate && o.follow && o.basemap, zoom, world: 256 * 2 ** zoom, tiles, ready: false };
     tilesY = y + map.h + 30;
   }
   const gap = 20, tw = metrics.length ? (1000 - gap * (metrics.length - 1)) / metrics.length : 0;
@@ -560,6 +578,11 @@ function drawFrame(srcT) {
     const f = m.follow ? followTiles(m, gs) : null;
     if (m.basemap) {
       ctx.save(); roundRect(m.x, m.y, m.w, m.h, 18); ctx.clip();
+      if (m.rotate) {
+        ctx.translate(m.x + m.w / 2, m.y + m.h / 2);
+        ctx.rotate(-mapBearing(m, gs));
+        ctx.translate(-(m.x + m.w / 2), -(m.y + m.h / 2));
+      }
       const visibleTiles = f ? f.tiles : m.tiles;
       for (const t of visibleTiles) {
         const img = f ? mapTiles.get(t.key) : null;
@@ -574,19 +597,29 @@ function drawFrame(srcT) {
       ctx.fillStyle = '#FFFFFF'; ctx.fillText('© OpenStreetMap contributors', m.x + 16, m.y + m.h - 19);
     }
     ctx.save(); roundRect(m.x, m.y, m.w, m.h, 18); ctx.clip();
+    if (m.rotate) {
+      ctx.translate(m.x + m.w / 2, m.y + m.h / 2);
+      ctx.rotate(-mapBearing(m, gs));
+      ctx.translate(-(m.x + m.w / 2), -(m.y + m.h / 2));
+    }
     ctx.lineJoin = 'round'; ctx.lineCap = 'round';
     const gi = Math.min(g.n - 1, Math.floor(Math.max(0, gs)));
     if (m.follow) {
-      // Show the recent 90 seconds of travel instead of shrinking the entire route.
-      const path = new Path2D(), first = Math.max(0, gi - 90);
-      let pen = false;
-      for (let i = first; i <= gi; i++) {
-        if (m.hidden[i]) { pen = false; continue; }
-        const x = m.x + mercX(g.lon[i]) * m.world - f.left;
-        const y = m.y + mercY(g.lat[i]) * m.world - f.upper;
-        if (pen) path.lineTo(x, y); else { path.moveTo(x, y); pen = true; }
+      // Older travelled route in blue-grey; latest 90 seconds in orange.
+      // Draw the older part first so orange stays clearly visible.
+      const recentStart = Math.max(0, gi - 90);
+      function drawFollowTrace(first, last, color, width) {
+        const path = new Path2D(); let pen = false;
+        for (let i = first; i <= last; i++) {
+          if (m.hidden[i]) { pen = false; continue; }
+          const x = m.x + mercX(g.lon[i]) * m.world - f.left;
+          const y = m.y + mercY(g.lat[i]) * m.world - f.upper;
+          if (pen) path.lineTo(x, y); else { path.moveTo(x, y); pen = true; }
+        }
+        ctx.strokeStyle = color; ctx.lineWidth = width; ctx.stroke(path);
       }
-      ctx.strokeStyle = '#FF8C00'; ctx.lineWidth = 9; ctx.stroke(path);
+      if (recentStart > 0) drawFollowTrace(0, recentStart, '#4785C7', 7);
+      drawFollowTrace(recentStart, gi, '#FF8C00', 9);
     } else {
       ctx.strokeStyle = '#8c8c8c'; ctx.lineWidth = 4; ctx.stroke(m.full);
       if (gs > 0) {
@@ -596,13 +629,13 @@ function drawFrame(srcT) {
         ctx.strokeStyle = '#FF8C00'; ctx.lineWidth = 9; ctx.stroke();
       }
     }
+    ctx.restore();
     if (inData && !m.hidden[gi]) {
       const dotX = m.follow ? m.x + mercX(valueAt(g.lon, gs)) * m.world - f.left : valueAt(m.px, gs);
       const dotY = m.follow ? m.y + mercY(valueAt(g.lat, gs)) * m.world - f.upper : valueAt(m.py, gs);
       ctx.beginPath(); ctx.arc(dotX, dotY, 14, 0, Math.PI * 2);
       ctx.fillStyle = '#FF2020'; ctx.fill(); ctx.lineWidth = 5; ctx.strokeStyle = '#FFFFFF'; ctx.stroke();
     }
-    ctx.restore();
   }
   // stat tiles
   for (const t of L.tiles) {
@@ -866,7 +899,7 @@ $('folderIn').addEventListener('change', e => { if (e.target.files.length) useFo
 $('trackIn').addEventListener('change', async e => { const f = e.target.files[0]; if (f) useTrack(await f.text()); });
 $('scrub').addEventListener('input', e => preview(+e.target.value));
 for (const b of document.querySelectorAll('.offset button[data-d]')) b.addEventListener('click', () => { $('offset').value = ((+$('offset').value || 0) + +b.dataset.d).toFixed(1); refresh(); });
-for (const id of ['offset', 'optBasemap', 'mapMode', 'optMap', 'optHr', 'optSpd', 'optPwr', 'optTime', 'optFlip', 'optHideEnd', 'privacy']) $(id).addEventListener('input', refresh);
+for (const id of ['offset', 'optBasemap', 'mapMode', 'optRotateMap', 'optMap', 'optHr', 'optSpd', 'optPwr', 'optTime', 'optFlip', 'optHideEnd', 'privacy']) $(id).addEventListener('input', refresh);
 $('autoSync').addEventListener('click', autoSync);
 $('renderBtn').addEventListener('click', render);
 $('autoSync').disabled = true;
