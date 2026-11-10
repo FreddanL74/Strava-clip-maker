@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Strava Clip Maker v1.9.1</title>
+<title>Strava Clip Maker v2.0.0</title>
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <style>
   :root {
@@ -66,7 +66,7 @@
 <body>
 <main>
   <header>
-    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v1.9.1</span></h1>
+    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.0.0</span></h1>
     <p class="lead">Combine a GoPro video or time-lapse photos with a Garmin GPX or TCX file into a 30-second portrait time-lapse with overlays. Everything runs locally in your browser; no file leaves this computer.</p>
   </header>
 
@@ -97,6 +97,25 @@
         <label>Following map zoom <input type="range" id="mapZoom" min="10" max="18" step="1" value="12"> <output id="mapZoomValue">12</output></label>
         <label>Rider vertical position <input type="range" id="mapAnchor" min="30" max="75" step="5" value="65"> <output id="mapAnchorValue">65%</output></label>
         <label><input type="checkbox" id="optSmoothMap" checked> Smooth rotation and GPS movement</label>
+        <div id="maplibreSettings" style="border:1px solid var(--line);border-radius:9px;padding:12px;margin-bottom:12px">
+          <strong>MapLibre 3D settings</strong>
+          <label class="field">Map theme
+            <select id="flyTheme"><option value="auto" selected>Auto — day/night</option><option value="dark">Dark</option><option value="light">Light</option></select>
+          </label>
+          <label class="field">Rider position <output id="flyAnchorValue">72%</output>
+            <input id="flyAnchor" type="range" min="50" max="85" step="1" value="72">
+          </label>
+          <label class="field">Camera pitch <output id="flyPitchValue">60°</output>
+            <input id="flyPitch" type="range" min="40" max="75" step="5" value="60">
+          </label>
+          <label class="field">Terrain exaggeration <output id="flyTerrainValue">2.2×</output>
+            <input id="flyTerrain" type="range" min="1" max="5" step="0.2" value="2.2">
+          </label>
+          <label class="field">Map height <output id="flyHeightValue">560 px</output>
+            <input id="flyHeight" type="range" min="350" max="650" step="10" value="560">
+          </label>
+          <small class="muted">Auto uses activity timestamp and your browser's local timezone.</small>
+        </div>
         <label><input type="checkbox" id="optHr" checked> Heart rate <small data-for="hr"></small></label>
         <label><input type="checkbox" id="optSpd" checked> Speed <small data-for="spd"></small></label>
         <label><input type="checkbox" id="optPwr" checked> Power <small data-for="pwr"></small></label>
@@ -530,6 +549,7 @@ const opt = () => ({
   map: $('optMap').checked && !!S.track?.has.map, basemap: $('optBasemap').checked, follow: $('mapMode').value !== 'static', flyover: $('mapMode').value === 'flyover', maplibre: $('mapMode').value === 'maplibre', rotate: $('optRotateMap').checked, smooth: $('optSmoothMap').checked, zoomLevel: +$('mapZoom').value, anchor: +$('mapAnchor').value / 100, hr: $('optHr').checked && !!S.track?.has.hr,
   spd: $('optSpd').checked && !!S.track?.has.spd, pwr: $('optPwr').checked && !!S.track?.has.pwr,
   time: $('optTime').checked, flip: $('optFlip').checked, hideEnd: $('optHideEnd').checked,
+  flyTheme:$('flyTheme').value, flyAnchor:+$('flyAnchor').value/100, flyPitch:+$('flyPitch').value, flyTerrain:+$('flyTerrain').value, flyHeight:+$('flyHeight').value,
   privacy: Math.max(0, +$('privacy').value || 0)
 });
 function buildLayout() {
@@ -538,7 +558,7 @@ function buildLayout() {
   const tileH = o.map ? 150 : 220;
   let map = null, tilesY = top;
   if (o.map && g) {
-    const maxW = 1000, maxH = Math.min(560, bottom - top - (metrics.length ? tileH + 30 : 0)), pad = 30, x = 40, y = top;
+    const maxW = 1000, maxH = Math.min(o.maplibre ? o.flyHeight : 560, bottom - top - (metrics.length ? tileH + 30 : 0)), pad = 30, x = 40, y = top;
     let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
     for (let i = 0; i < g.n; i++) { minLat = Math.min(minLat, g.lat[i]); maxLat = Math.max(maxLat, g.lat[i]); minLon = Math.min(minLon, g.lon[i]); maxLon = Math.max(maxLon, g.lon[i]); }
     const kx = Math.cos((minLat + maxLat) / 2 * Math.PI / 180);
@@ -570,7 +590,7 @@ function buildLayout() {
     const full = new Path2D(); let pen = false;
     for (let i = 0; i < g.n; i++) { if (hidden[i]) { pen = false; continue; } if (pen) full.lineTo(px[i], py[i]); else { full.moveTo(px[i], py[i]); pen = true; } }
     map = { x, y, w: maxW, h: o.follow && o.basemap ? maxH : h, px, py, hidden, full,
-      basemap: o.basemap, follow: o.follow && o.basemap, rotate: (o.rotate || o.flyover || o.maplibre) && o.follow && o.basemap, flyover: o.flyover && o.basemap, maplibre: o.maplibre && o.basemap, smooth: o.smooth, anchor: o.anchor, zoom, world: 256 * 2 ** zoom, tiles, ready: false };
+      basemap: o.basemap, follow: o.follow && o.basemap, rotate: (o.rotate || o.flyover || o.maplibre) && o.follow && o.basemap, flyover: o.flyover && o.basemap, maplibre: o.maplibre && o.basemap, smooth: o.smooth, anchor: o.maplibre ? o.flyAnchor : o.anchor, pitch:o.flyPitch, terrain:o.flyTerrain, theme:o.flyTheme, zoom, world: 256 * 2 ** zoom, tiles, ready: false };
     tilesY = y + map.h + 30;
   }
   const gap = 20, tw = metrics.length ? (1000 - gap * (metrics.length - 1)) / metrics.length : 0;
@@ -582,6 +602,7 @@ function buildLayout() {
 // Map rendering is asynchronous, so export explicitly waits for a rendered frame.
 let maplibre=null, maplibreMap=null, maplibreError=null, maplibreReady=null;
 let maplibreRouteTrack=null, maplibreRoutePrivacy=null, maplibreFrameSerial=0;
+let maplibreAppliedTheme=null;
 async function ensureMapLibre(){
   if(maplibreMap)return maplibreMap;
   if(maplibreReady)return maplibreReady;
@@ -614,9 +635,54 @@ async function ensureMapLibre(){
           'fill-extrusion-opacity':0.82}});
     }
     maplibreMap=map;
+    map.resize();
     return map;
   })().catch(e=>{maplibreReady=null;maplibreError=e;throw e;});
   return maplibreReady;
+}
+function desiredFlyTheme(m,gs,g){
+  if(m.theme!=='auto')return m.theme;
+  const hour=new Date(g.t0+gs*1000).getHours();
+  return hour>=7&&hour<19?'light':'dark';
+}
+function applyFlyTheme(map,theme){
+  if(maplibreAppliedTheme===theme)return;
+  maplibreAppliedTheme=theme;
+  const dark=theme==='dark';
+  // Recolor existing vector layers without resetting the style, sources,
+  // DEM, or route overlays. Preserve original paint for reversibility.
+  for(const layer of map.getStyle().layers){
+    if(!['background','fill','line'].includes(layer.type))continue;
+    if(layer.id.startsWith('fly-'))continue;
+    const paint=layer.paint||{};
+    const prop=layer.type==='background'?'background-color':layer.type==='fill'?'fill-color':'line-color';
+    if(!Object.prototype.hasOwnProperty.call(paint,prop))continue;
+    if(!map._flyOriginalPaint)map._flyOriginalPaint=new Map();
+    const key=layer.id+':'+prop;
+    if(!map._flyOriginalPaint.has(key))map._flyOriginalPaint.set(key,paint[prop]);
+    if(!dark){map.setPaintProperty(layer.id,prop,map._flyOriginalPaint.get(key));continue;}
+    const id=layer.id.toLowerCase();
+    const color=layer.type==='background'?'#18232d':
+      /water|ocean|lake|river/.test(id)?'#142f43':
+      /road|street|highway|motorway|path|rail/.test(id)?'#66717c':
+      /park|forest|wood|landcover|landuse|grass/.test(id)?'#233c32':
+      /building/.test(id)?'#39434b':'#29343d';
+    map.setPaintProperty(layer.id,prop,color);
+  }
+  if(map.getLayer('fly-buildings'))
+    map.setPaintProperty('fly-buildings','fill-extrusion-color',dark?'#647078':'#c4c9c5');
+}
+function smoothedFlyPosition(g,gs,enabled){
+  if(!enabled)return [valueAt(g.lon,gs),valueAt(g.lat,gs)];
+  const center=Math.max(0,Math.min(g.n-1,gs)),span=4;
+  let lon=0,lat=0,total=0;
+  for(let d=-span;d<=span;d++){
+    const i=Math.max(0,Math.min(g.n-1,Math.round(center)+d));
+    if(!Number.isFinite(g.lon[i])||!Number.isFinite(g.lat[i]))continue;
+    const dt=i-center,w=Math.exp(-.5*(dt/2.0)**2);
+    lon+=g.lon[i]*w;lat+=g.lat[i]*w;total+=w;
+  }
+  return total?[lon/total,lat/total]:[valueAt(g.lon,gs),valueAt(g.lat,gs)];
 }
 function flyLine(coords){return {type:'Feature',geometry:{type:'LineString',coordinates:coords},properties:{}};}
 function updateMapLibreRoute(map,m,g,gs){
@@ -650,14 +716,18 @@ function updateMapLibreRoute(map,m,g,gs){
 async function updateMapLibreFrame(m,gs,g,waitForTiles=false){
   const map=await ensureMapLibre();
   const index=Math.max(0,Math.min(g.n-1,Math.floor(gs)));
-  const lon=valueAt(g.lon,gs),lat=valueAt(g.lat,gs);
+  const [lon,lat]=smoothedFlyPosition(g,gs,m.smooth);
   if(!Number.isFinite(lon)||!Number.isFinite(lat))return;
   if(maplibreRouteTrack!==g||maplibreRoutePrivacy!==m.hidden){
     maplibreRouteTrack=g;maplibreRoutePrivacy=m.hidden;
   }
   updateMapLibreRoute(map,m,g,gs);
+  applyFlyTheme(map,desiredFlyTheme(m,gs,g));
+  if(map.getTerrain()?.source==='fly-dem')map.setTerrain({source:'fly-dem',exaggeration:m.terrain});
   const bearing=mapBearing(m,gs)*180/Math.PI;
-  map.jumpTo({center:[lon,lat],zoom:m.zoom,pitch:60,bearing});
+  const topPadding=Math.max(0,Math.round((2*m.anchor-1)*m.h));
+  map.jumpTo({center:[lon,lat],zoom:m.zoom,pitch:m.pitch,bearing,
+    padding:{top:topPadding,bottom:0,left:0,right:0}});
   if(waitForTiles){
     await Promise.race([new Promise(resolve=>map.once('idle',resolve)),
       new Promise(resolve=>setTimeout(resolve,1800))]);
@@ -671,8 +741,10 @@ function drawMapLibreFrame(m,gs,g){
   ctx.save();roundRect(m.x,m.y,m.w,m.h,18);ctx.clip();
   ctx.drawImage(map.getCanvas(),m.x,m.y,m.w,m.h);
   ctx.restore();
-  // MapLibre's projection places the GPS marker exactly at the map center.
-  const x=m.x+m.w/2,y=m.y+m.h/2;
+  // Project the same smoothed GPS coordinate used by the camera.
+  const [lon,lat]=smoothedFlyPosition(g,gs,m.smooth);
+  const projected=map.project([lon,lat]);
+  const x=m.x+projected.x,y=m.y+projected.y;
   ctx.beginPath();ctx.moveTo(x,y-19);ctx.lineTo(x-13,y+12);ctx.lineTo(x,y+5);ctx.lineTo(x+13,y+12);ctx.closePath();
   ctx.fillStyle='#ef3c30';ctx.fill();ctx.strokeStyle='white';ctx.lineWidth=3;ctx.stroke();
   ctx.fillStyle='rgba(0,0,0,.7)';ctx.fillRect(m.x+8,m.y+m.h-28,440,23);
@@ -742,7 +814,7 @@ function drawFrame(srcT) {
   ctx.drawImage(c.src, (c.w - side) / 2, (c.h - side) / 2, side, side, 0, VIDEO_Y, VIDEO_S, VIDEO_S);
   ctx.restore();
   if (!g) return;
-  if (L.map?.follow) { for (const t of followTiles(L.map, gs).tiles) if (!mapTiles.has(t.key)) loadMapTile(L.map.zoom, t.tx, t.ty).then(() => { if (!S.busy) preview(+$('scrub').value); }); }
+  if (L.map?.follow && !L.map.maplibre) { for (const t of followTiles(L.map, gs).tiles) if (!mapTiles.has(t.key)) loadMapTile(L.map.zoom, t.tx, t.ty).then(() => { if (!S.busy) preview(+$('scrub').value); }); }
   const inData = gs >= 0 && gs <= g.n - 1;
   // map
   if (L.map) {
@@ -887,6 +959,7 @@ function refresh() {
     (m.maplibre ? ensureMapLibre().then(()=>updateMapLibreFrame(m,+$('scrub').value+(+$('offset').value||0),S.track,true)) : m.follow ? prepareFollowTiles(m, +$('scrub').value) : prepareMapTiles())
       .then(() => { if (!S.busy) preview(+$('scrub').value); });
   }
+  $('maplibreSettings').style.display=$('mapMode').value==='maplibre'?'block':'none';
   $('mapZoomValue').textContent = $('mapZoom').value;
   $('mapAnchorValue').textContent = $('mapAnchor').value + '%';
   $('scrub').max = Math.max(0.1, S.total - 0.1).toFixed(1); $('scrub').disabled = false;
@@ -1127,7 +1200,11 @@ $('trackIn').addEventListener('change', async e => { const f = e.target.files[0]
 $('scrub').addEventListener('input', e => preview(+e.target.value));
 for (const b of document.querySelectorAll('.offset button[data-d]')) b.addEventListener('click', () => { $('offset').value = ((+$('offset').value || 0) + +b.dataset.d).toFixed(1); refresh(); });
 $('mapMode').addEventListener('change',()=>{ if($('mapMode').value==='maplibre')$('mapZoom').value='17'; });
-for (const id of ['offset', 'optBasemap', 'mapMode', 'optRotateMap', 'optSmoothMap', 'mapZoom', 'mapAnchor', 'optMap', 'optHr', 'optSpd', 'optPwr', 'optTime', 'optFlip', 'optHideEnd', 'privacy']) $(id).addEventListener('input', refresh);
+for (const id of ['flyTheme','flyAnchor','flyPitch','flyTerrain','flyHeight','offset', 'optBasemap', 'mapMode', 'optRotateMap', 'optSmoothMap', 'mapZoom', 'mapAnchor', 'optMap', 'optHr', 'optSpd', 'optPwr', 'optTime', 'optFlip', 'optHideEnd', 'privacy']) $(id).addEventListener('input', refresh);
+for(const [id,unit] of [['flyAnchor','%'],['flyPitch','°'],['flyTerrain','×'],['flyHeight',' px']]){
+  $(id).addEventListener('input',()=>{$(id+'Value').textContent=$(id).value+unit;});
+}
+$('maplibreSettings').style.display='none';
 $('autoSync').addEventListener('click', autoSync);
 $('renderBtn').addEventListener('click', render);
 $('autoSync').disabled = true;
