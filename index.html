@@ -994,7 +994,7 @@ function refresh() {
   $('mapZoomValue').textContent = $('mapZoom').value;
   $('mapAnchorValue').textContent = $('mapAnchor').value + '%';
   $('scrub').max = Math.max(0.1, S.total - 0.1).toFixed(1); $('scrub').disabled = false;
-  $('renderBtn').disabled = !S.track || !canPreview();
+  $('renderBtn').disabled = !canPreview() || ($('outputMode').value!=='gopro'&&!S.track);
   $('autoSync').disabled = !(S.track?.has.spd);
   updateSyncInfo();
   preview(+$('scrub').value);
@@ -1214,7 +1214,7 @@ async function render() {
   S.busy = false; lock(false);
 }
 const photosIn = (a, b) => photoIndexAt(b) - photoIndexAt(a) + 1;
-function lock(on) { for (const id of ['renderBtn', 'autoSync', 'videoIn', 'folderIn', 'trackIn']) $(id).disabled = on || (id === 'renderBtn' && !S.track) || (id === 'autoSync' && !S.track?.has.spd); }
+function lock(on) { for (const id of ['renderBtn', 'autoSync', 'videoIn', 'folderIn', 'trackIn']) $(id).disabled = on || (id === 'renderBtn' && (!canPreview() || ($('outputMode').value!=='gopro'&&!S.track))) || (id === 'autoSync' && (!S.track?.has.spd||!hasMedia())); }
 
 // ---------- wiring ----------
 function mediaLoaded() {
@@ -1248,7 +1248,11 @@ $('folderIn').addEventListener('change', e => { if (e.target.files.length) useFo
 $('trackIn').addEventListener('change', async e => { const f = e.target.files[0]; if (f) useTrack(await f.text()); });
 $('scrub').addEventListener('input', e => preview(+e.target.value));
 for (const b of document.querySelectorAll('.offset button[data-d]')) b.addEventListener('click', () => { $('offset').value = ((+$('offset').value || 0) + +b.dataset.d).toFixed(1); refresh(); });
-$('outputMode').addEventListener('change',()=>{if(mapOnly()&&!hasMedia()&&S.track){S.total=S.track.n-1;$('scrub').max=S.total-0.1;}});
+$('outputMode').addEventListener('change',()=>{
+  if(mapOnly()){$('mapMode').value='maplibre';$('mapZoom').value='17';}
+  if(mapOnly()&&!hasMedia()&&S.track){S.total=S.track.n-1;$('scrub').max=Math.max(0.1,S.total-0.1);}
+  refresh();
+});
 $('mapMode').addEventListener('change',()=>{ if($('mapMode').value==='maplibre')$('mapZoom').value='17'; });
 for (const id of ['outputMode','flyTheme','flyAnchor','flyPitch','flyTerrain','flyHeight','offset', 'optBasemap', 'mapMode', 'optRotateMap', 'optSmoothMap', 'mapZoom', 'mapAnchor', 'optMap', 'optHr', 'optSpd', 'optPwr', 'optTime', 'optFlip', 'optHideEnd', 'privacy']) $(id).addEventListener('input', refresh);
 for(const [id,unit] of [['flyAnchor','%'],['flyPitch','°'],['flyTerrain','×'],['flyHeight',' px']]){
