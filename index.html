@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Strava Clip Maker v1.7.2</title>
+<title>Strava Clip Maker v1.7.3</title>
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <style>
   :root {
@@ -65,7 +65,7 @@
 <body>
 <main>
   <header>
-    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v1.7.2</span></h1>
+    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v1.7.3</span></h1>
     <p class="lead">Combine a GoPro video or time-lapse photos with a Garmin GPX or TCX file into a 30-second portrait time-lapse with overlays. Everything runs locally in your browser; no file leaves this computer.</p>
   </header>
 
@@ -93,7 +93,7 @@
           <select id="mapMode"><option value="static">Static — whole route</option><option value="follow">Animated — follow position</option><option value="flyover">3D Flyover — perspective navigation (beta)</option></select>
         </label>
         <label><input type="checkbox" id="optRotateMap"> Rotate following map in direction of travel</label>
-        <label>Following map zoom <input type="range" id="mapZoom" min="10" max="15" step="1" value="12"> <output id="mapZoomValue">12</output></label>
+        <label>Following map zoom <input type="range" id="mapZoom" min="10" max="18" step="1" value="12"> <output id="mapZoomValue">12</output></label>
         <label>Rider vertical position <input type="range" id="mapAnchor" min="30" max="75" step="5" value="65"> <output id="mapAnchorValue">65%</output></label>
         <label><input type="checkbox" id="optSmoothMap" checked> Smooth rotation and GPS movement</label>
         <label><input type="checkbox" id="optHr" checked> Heart rate <small data-for="hr"></small></label>
@@ -552,7 +552,7 @@ function buildLayout() {
         const world = 256 * 2 ** zoom;
         if ((mx1 - mx0) * world <= maxW - 2 * pad && (my1 - my0) * world <= h - 2 * pad) break;
       }
-      if (o.follow) zoom = Math.min(17, o.zoomLevel + (o.flyover ? 1 : 0));
+      if (o.follow) zoom = Math.min(19, o.zoomLevel + (o.flyover ? 1 : 0));
       const world = 256 * 2 ** zoom;
       const cx = (mx0 + mx1) / 2 * world, cy = (my0 + my1) / 2 * world;
       const left = cx - maxW / 2, upper = cy - h / 2;
