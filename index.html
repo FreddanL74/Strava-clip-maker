@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Strava Clip Maker v2.0.0</title>
+<title>Strava Clip Maker v2.0.1</title>
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <style>
   :root {
@@ -66,7 +66,7 @@
 <body>
 <main>
   <header>
-    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.0.0</span></h1>
+    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.0.1</span></h1>
     <p class="lead">Combine a GoPro video or time-lapse photos with a Garmin GPX or TCX file into a 30-second portrait time-lapse with overlays. Everything runs locally in your browser; no file leaves this computer.</p>
   </header>
 
@@ -689,6 +689,9 @@ function flyLine(coords){return {type:'Feature',geometry:{type:'LineString',coor
 function updateMapLibreRoute(map,m,g,gs){
   const current=Math.max(0,Math.min(g.n-1,Math.floor(gs)));
   const recent=Math.max(0,current-90);
+  // Use the exact interpolated GPS coordinate for both the orange endpoint
+  // and the rider symbol. Camera smoothing must never displace the rider.
+  const rider=[valueAt(g.lon,gs),valueAt(g.lat,gs)];
   // Split at privacy-hidden points so no line bridges private locations.
   const segments=(start,end)=>{
     const features=[];let points=[];
@@ -706,12 +709,32 @@ function updateMapLibreRoute(map,m,g,gs){
     ['fly-recent',recent,current,'#FF8C00',8]
   ]){
     const data=segments(start,end);
+    if(id==='fly-recent' && !m.hidden[current] && rider.every(Number.isFinite)){
+      const last=data.features[data.features.length-1];
+      if(last)last.geometry.coordinates.push(rider);
+      else if(current>0&&!m.hidden[current-1])data.features.push(flyLine([[g.lon[current-1],g.lat[current-1]],rider]));
+    }
     if(map.getSource(id))map.getSource(id).setData(data);
     else{
       map.addSource(id,{type:'geojson',data});
       map.addLayer({id:id+'-line',type:'line',source:id,
         paint:{'line-color':color,'line-width':width,'line-opacity':.95}});
     }
+  }
+  // Symbol and track share MapLibre's geographic rendering pipeline.
+  // This avoids 2D canvas projection offsets over pitched 3D terrain.
+  const riderData={type:'Feature',geometry:{type:'Point',coordinates:rider},properties:{}};
+  if(map.getSource('fly-rider'))map.getSource('fly-rider').setData(riderData);
+  else {
+    const c=document.createElement('canvas');c.width=64;c.height=64;
+    const p=c.getContext('2d');
+    p.beginPath();p.moveTo(32,7);p.lineTo(12,53);p.lineTo(32,43);p.lineTo(52,53);p.closePath();
+    p.fillStyle='#ef3c30';p.fill();p.strokeStyle='#ffffff';p.lineWidth=5;p.lineJoin='round';p.stroke();
+    map.addImage('fly-rider-icon',p.getImageData(0,0,64,64),{pixelRatio:2});
+    map.addSource('fly-rider',{type:'geojson',data:riderData});
+    map.addLayer({id:'fly-rider-symbol',type:'symbol',source:'fly-rider',
+      layout:{'icon-image':'fly-rider-icon','icon-size':1.1,'icon-allow-overlap':true,
+        'icon-ignore-placement':true,'icon-pitch-alignment':'viewport','icon-rotation-alignment':'viewport'}});
   }
 }
 async function updateMapLibreFrame(m,gs,g,waitForTiles=false){
@@ -745,12 +768,6 @@ function drawMapLibreFrame(m,gs,g){
   ctx.save();roundRect(m.x,m.y,m.w,m.h,18);ctx.clip();
   ctx.drawImage(map.getCanvas(),m.x,m.y,m.w,m.h);
   ctx.restore();
-  // Project the same smoothed GPS coordinate used by the camera.
-  const [lon,lat]=smoothedFlyPosition(g,gs,m.smooth);
-  const projected=map.project([lon,lat]);
-  const x=m.x+projected.x,y=m.y+projected.y;
-  ctx.beginPath();ctx.moveTo(x,y-19);ctx.lineTo(x-13,y+12);ctx.lineTo(x,y+5);ctx.lineTo(x+13,y+12);ctx.closePath();
-  ctx.fillStyle='#ef3c30';ctx.fill();ctx.strokeStyle='white';ctx.lineWidth=3;ctx.stroke();
   ctx.fillStyle='rgba(0,0,0,.7)';ctx.fillRect(m.x+8,m.y+m.h-28,440,23);
   ctx.fillStyle='white';ctx.font='16px Arial';ctx.fillText('© OpenStreetMap contributors · OpenFreeMap · AWS Terrain',m.x+14,m.y+m.h-12);
 }
