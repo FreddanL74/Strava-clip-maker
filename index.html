@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Strava Clip Maker v1.7.0</title>
+<title>Strava Clip Maker v1.7.1</title>
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <style>
   :root {
@@ -65,7 +65,7 @@
 <body>
 <main>
   <header>
-    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v1.7.0</span></h1>
+    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v1.7.1</span></h1>
     <p class="lead">Combine a GoPro video or time-lapse photos with a Garmin GPX or TCX file into a 30-second portrait time-lapse with overlays. Everything runs locally in your browser; no file leaves this computer.</p>
   </header>
 
@@ -77,9 +77,13 @@
       </label>
       <label class="field">…or a whole folder (for example D:\DCIM). The page picks the photos or video recorded during the activity. The browser asks to "upload" the files; they are only read locally.
         <input type="file" id="folderIn" webkitdirectory multiple>
+        <small>Preferred folder: D:\\DCIM</small>
+        <button type="button" id="pickMediaFolder">Choose media folder (remember location)</button>
       </label>
       <label class="field">Activity file (GPX or TCX)
         <input type="file" id="trackIn" accept=".gpx,.tcx,application/gpx+xml,application/xml">
+        <small>Preferred folder: C:\\Users\\ne9627\\Downloads</small>
+        <button type="button" id="pickTrackFile">Choose GPX/TCX (remember location)</button>
       </label>
       <p class="info" id="fileInfo">No files loaded.</p>
     </section>
@@ -552,7 +556,7 @@ function buildLayout() {
         const world = 256 * 2 ** zoom;
         if ((mx1 - mx0) * world <= maxW - 2 * pad && (my1 - my0) * world <= h - 2 * pad) break;
       }
-      if (o.follow) zoom = o.zoomLevel;
+      if (o.follow) zoom = Math.min(17, o.zoomLevel + (o.flyover ? 1 : 0));
       const world = 256 * 2 ** zoom;
       const cx = (mx0 + mx1) / 2 * world, cy = (my0 + my1) / 2 * world;
       const left = cx - maxW / 2, upper = cy - h / 2;
@@ -624,7 +628,7 @@ function drawFlyover(m,f,gs,g,gi,inData) {
   }
   ctx.restore();
   if(inData&&!m.hidden[gi]){
-    const x=m.x+m.w/2,y=m.y+m.h*.77;
+    const x=m.x+m.w/2,y=m.y+m.h*.66;
     ctx.beginPath();ctx.moveTo(x,y-20);ctx.lineTo(x-15,y+14);ctx.lineTo(x,y+7);ctx.lineTo(x+15,y+14);ctx.closePath();
     ctx.fillStyle='#F44336';ctx.fill();ctx.lineWidth=3;ctx.strokeStyle='#fff';ctx.stroke();
   }
@@ -1004,6 +1008,36 @@ async function useTrack(text) {
     defaultOffset(); updateFileInfo(); setStatus(''); refresh();
   } catch (err) { if (!S.track) updateFileInfo(); setStatus(err.message, 'err'); }
 }
+// File System Access pickers remember the last location for each picker ID
+// in supporting browsers. Local paths cannot be set by a website.
+$('pickMediaFolder').addEventListener('click', async () => {
+  if (!window.showDirectoryPicker) { $('folderIn').click(); return; }
+  try {
+    const dir = await window.showDirectoryPicker({id:'strava-media-dcim',mode:'read'});
+    const files=[];
+    async function walk(d,depth) {
+      if(depth>4)return;
+      for await (const entry of d.values()){
+        if(entry.kind==='file' && /\\.(mp4|mov|jpe?g)$/i.test(entry.name))
+          files.push(await entry.getFile());
+        else if(entry.kind==='directory') await walk(entry,depth+1);
+      }
+    }
+    setStatus('Scanning selected media folder…');
+    await walk(dir,0);
+    if(files.length)await useFolder(files);
+    else setStatus('No supported videos or JPG images found in the folder.','err');
+  } catch(e) { if(e.name!=='AbortError')setStatus('Folder access failed: '+e.message,'err'); }
+});
+$('pickTrackFile').addEventListener('click', async () => {
+  if (!window.showOpenFilePicker) { $('trackIn').click(); return; }
+  try {
+    const handles=await window.showOpenFilePicker({id:'strava-track-downloads',multiple:false,
+      types:[{description:'GPS activity files',accept:{'application/octet-stream':['.gpx','.tcx']}}]});
+    const file=await handles[0].getFile();
+    await useTrack(await file.text());
+  } catch(e) { if(e.name!=='AbortError')setStatus('GPS file selection failed: '+e.message,'err'); }
+});
 $('videoIn').addEventListener('change', e => { if (e.target.files.length) useMediaFiles(e.target.files); });
 $('folderIn').addEventListener('change', e => { if (e.target.files.length) useFolder(e.target.files); });
 $('trackIn').addEventListener('change', async e => { const f = e.target.files[0]; if (f) useTrack(await f.text()); });
