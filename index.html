@@ -666,13 +666,14 @@ async function contourTile(z,x,y){
     const heights=new Float32Array(256*256);
     for(let i=0;i<heights.length;i++)heights[i]=pixels[4*i]*256+pixels[4*i+1]+pixels[4*i+2]/256-32768;
     const features=[];
-    const min=Math.min(...heights),max=Math.max(...heights);
+    let min=Infinity,max=-Infinity;
+    for(const h of heights){if(h<min)min=h;if(h>max)max=h;}
     const spacing=10;
     for(let level=Math.ceil(min/spacing)*spacing;level<=max;level+=spacing){
       const coordinates=[];
       // Marching squares, sampling every 3 pixels; line segments are
       // independent GeoJSON segments to avoid false connections.
-      const stride=3;
+      const stride=4;
       for(let py=0;py<255-stride;py+=stride)for(let px=0;px<255-stride;px+=stride){
         const h0=heights[py*256+px],h1=heights[py*256+px+stride],
           h2=heights[(py+stride)*256+px+stride],h3=heights[(py+stride)*256+px];
@@ -736,7 +737,7 @@ async function updateMapLibreFrame(m,gs,g,waitForTiles=false){
     await Promise.race([new Promise(resolve=>map.once('idle',resolve)),
       new Promise(resolve=>setTimeout(resolve,1800))]);
     map.triggerRepaint();
-    await new Promise(resolve=>map.once('render',resolve));
+    await Promise.race([new Promise(resolve=>map.once('render',resolve)),new Promise(resolve=>setTimeout(resolve,350))]);
   }else await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
 }
 function drawMapLibreFrame(m,gs,g){
