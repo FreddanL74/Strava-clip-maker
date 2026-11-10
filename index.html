@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Strava Clip Maker v2.0.2</title>
+<title>Strava Clip Maker v2.1.0</title>
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <style>
   :root {
@@ -66,7 +66,7 @@
 <body>
 <main>
   <header>
-    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.0.2</span></h1>
+    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.1.0</span></h1>
     <p class="lead">Combine a GoPro video or time-lapse photos with a Garmin GPX or TCX file into a 30-second portrait time-lapse with overlays. Everything runs locally in your browser; no file leaves this computer.</p>
   </header>
 
@@ -87,6 +87,7 @@
 
     <section class="card">
       <h2>2. What to show</h2>
+<label class="field">Output layout <select id="outputMode"><option value="combined">GoPro + map</option><option value="gopro">GoPro only — full frame</option><option value="map">Map only — full frame</option></select></label>
       <div class="checks" id="checks">
         <label><input type="checkbox" id="optMap" checked> GPS trace (map) <small data-for="map"></small></label>
         <label><input type="checkbox" id="optBasemap" checked> OpenStreetMap background (requires internet)</label>
@@ -377,6 +378,8 @@ async function loadVideos(fileList) {
 }
 function clipAt(t) { let c = S.clips[0]; for (const x of S.clips) if (t >= x.start) c = x; return c; }
 const hasMedia = () => S.total > 0 && (S.kind === 'image' ? S.photos.length > 0 : S.clips.length > 0);
+const mapOnly=()=>$('outputMode').value==='map';
+const canPreview=()=>hasMedia()||(mapOnly()&&!!S.track?.has.map);
 const mediaName = () => (S.kind === 'image' ? S.photos[0].file.name : S.clips[0].file.name).replace(/\.[^.]+$/, '') || 'clip';
 let seekChain = Promise.resolve();
 function seekTo(t) { const p = seekChain.then(() => doSeek(t)); seekChain = p.catch(() => {}); return p; }
@@ -546,25 +549,27 @@ async function prepareMapTiles() {
 }
 // ---------- layout ----------
 const opt = () => ({
-  map: $('optMap').checked && !!S.track?.has.map, basemap: $('optBasemap').checked, follow: $('mapMode').value !== 'static', flyover: $('mapMode').value === 'flyover', maplibre: $('mapMode').value === 'maplibre', rotate: $('optRotateMap').checked, smooth: $('optSmoothMap').checked, zoomLevel: +$('mapZoom').value, anchor: +$('mapAnchor').value / 100, hr: $('optHr').checked && !!S.track?.has.hr,
+  output:$('outputMode').value,
+  map: ($('outputMode').value==='map'||$('optMap').checked) && !!S.track?.has.map, basemap: $('optBasemap').checked, follow: $('mapMode').value !== 'static', flyover: $('mapMode').value === 'flyover', maplibre: $('mapMode').value === 'maplibre', rotate: $('optRotateMap').checked, smooth: $('optSmoothMap').checked, zoomLevel: +$('mapZoom').value, anchor: +$('mapAnchor').value / 100, hr: $('optHr').checked && !!S.track?.has.hr,
   spd: $('optSpd').checked && !!S.track?.has.spd, pwr: $('optPwr').checked && !!S.track?.has.pwr,
   time: $('optTime').checked, flip: $('optFlip').checked, hideEnd: $('optHideEnd').checked,
   flyTheme:$('flyTheme').value, flyAnchor:+$('flyAnchor').value/100, flyPitch:+$('flyPitch').value, flyTerrain:+$('flyTerrain').value, flyHeight:+$('flyHeight').value,
   privacy: Math.max(0, +$('privacy').value || 0)
 });
 function buildLayout() {
-  const o = opt(), g = S.track, top = VIDEO_Y + VIDEO_S + 40, bottom = 1850;
-  const metrics = ['hr', 'spd', 'pwr', 'time'].filter(k => o[k]);
+  const o = opt(), g = S.track, top = o.output==='map'?0:VIDEO_Y + VIDEO_S + 40, bottom = o.output==='map'?H:1850;
+  const metrics = o.output==='combined'?['hr', 'spd', 'pwr', 'time'].filter(k => o[k]):[];
   const tileH = o.map ? 150 : 220;
   let map = null, tilesY = top;
-  if (o.map && g) {
-    const maxW = 1000, maxH = Math.min(o.maplibre ? o.flyHeight : 560, bottom - top - (metrics.length ? tileH + 30 : 0)), pad = 30, x = 40, y = top;
+  if (o.map && g && o.output!=='gopro') {
+    const fullMap=o.output==='map';
+    const maxW = fullMap?W:1000, maxH = fullMap?H:Math.min(o.maplibre ? o.flyHeight : 560, bottom - top - (metrics.length ? tileH + 30 : 0)), pad = fullMap?20:30, x = fullMap?0:40, y = top;
     let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
     for (let i = 0; i < g.n; i++) { minLat = Math.min(minLat, g.lat[i]); maxLat = Math.max(maxLat, g.lat[i]); minLon = Math.min(minLon, g.lon[i]); maxLon = Math.max(maxLon, g.lon[i]); }
     const kx = Math.cos((minLat + maxLat) / 2 * Math.PI / 180);
     const spanX = Math.max(1e-6, (maxLon - minLon) * kx), spanY = Math.max(1e-6, maxLat - minLat);
     const scale = Math.min((maxW - 2 * pad) / spanX, (maxH - 2 * pad) / spanY);
-    const h = Math.max(90, Math.round(spanY * scale + 2 * pad));
+    const h = fullMap?H:Math.max(90, Math.round(spanY * scale + 2 * pad));
     const px = new Float64Array(g.n), py = new Float64Array(g.n), hidden = new Uint8Array(g.n);
     const R2 = o.privacy * o.privacy, near = (i, j) => { const dy = (g.lat[i] - g.lat[j]) * 111320, dx = (g.lon[i] - g.lon[j]) * 111320 * kx; return dx * dx + dy * dy < R2; };
     let tiles = [], zoom = 0;
@@ -589,12 +594,13 @@ function buildLayout() {
     for (let i = 0; i < g.n; i++) hidden[i] = o.privacy > 0 && (near(i, 0) || (o.hideEnd && near(i, g.n - 1))) ? 1 : 0;
     const full = new Path2D(); let pen = false;
     for (let i = 0; i < g.n; i++) { if (hidden[i]) { pen = false; continue; } if (pen) full.lineTo(px[i], py[i]); else { full.moveTo(px[i], py[i]); pen = true; } }
-    map = { x, y, w: maxW, h: o.follow && o.basemap ? maxH : h, px, py, hidden, full,
+    map = { x, y, w: maxW, h: fullMap?H:o.follow && o.basemap ? maxH : h, fullMap, px, py, hidden, full,
       basemap: o.basemap, follow: o.follow && o.basemap, rotate: (o.rotate || o.flyover || o.maplibre) && o.follow && o.basemap, flyover: o.flyover && o.basemap, maplibre: o.maplibre && o.basemap, smooth: o.smooth, anchor: o.maplibre ? o.flyAnchor : o.anchor, pitch:o.flyPitch, terrain:o.flyTerrain, theme:o.flyTheme, zoom, world: 256 * 2 ** zoom, tiles, ready: false };
     tilesY = y + map.h + 30;
   }
   const gap = 20, tw = metrics.length ? (1000 - gap * (metrics.length - 1)) / metrics.length : 0;
   S.layout = { o, map, tiles: metrics.map((k, i) => ({ k, x: 40 + i * (tw + gap), y: tilesY, w: tw, h: tileH })) };
+  if(map?.maplibre){const host=$('maplibreHost');if(host.style.width!==map.w+'px'||host.style.height!==map.h+'px'){host.style.width=map.w+'px';host.style.height=map.h+'px';if(maplibreMap)maplibreMap.resize();}}
 }
 
 // Genuine MapLibre 3D camera, drawn into the same canvas used by MP4 export.
@@ -765,7 +771,7 @@ async function updateMapLibreFrame(m,gs,g,waitForTiles=false){
 function drawMapLibreFrame(m,gs,g){
   const map=maplibreMap;
   if(!map){ctx.fillStyle='#243442';ctx.fillRect(m.x,m.y,m.w,m.h);return;}
-  ctx.save();roundRect(m.x,m.y,m.w,m.h,18);ctx.clip();
+  ctx.save();if(m.fullMap){ctx.beginPath();ctx.rect(m.x,m.y,m.w,m.h);}else roundRect(m.x,m.y,m.w,m.h,18);ctx.clip();
   ctx.drawImage(map.getCanvas(),m.x,m.y,m.w,m.h);
   ctx.restore();
   ctx.fillStyle='rgba(0,0,0,.7)';ctx.fillRect(m.x+8,m.y+m.h-28,440,23);
@@ -828,12 +834,15 @@ function drawFlyover(m,f,gs,g,gi,inData) {
 function drawFrame(srcT) {
   const L = S.layout, o = L.o, g = S.track, off = +$('offset').value || 0, gs = srcT + off;
   ctx.fillStyle = '#111111'; ctx.fillRect(0, 0, W, H);
-  // video: centred square crop
-  const c = S.cur, side = Math.min(c.w, c.h);
-  ctx.save();
-  if (o.flip) { ctx.translate(W / 2, VIDEO_Y + VIDEO_S / 2); ctx.rotate(Math.PI); ctx.translate(-W / 2, -(VIDEO_Y + VIDEO_S / 2)); }
-  ctx.drawImage(c.src, (c.w - side) / 2, (c.h - side) / 2, side, side, 0, VIDEO_Y, VIDEO_S, VIDEO_S);
-  ctx.restore();
+  if(o.output!=='map'&&S.cur){
+    const c=S.cur,full=o.output==='gopro',dw=W,dh=full?H:VIDEO_S,dy=full?0:VIDEO_Y;
+    const ratio=dw/dh,source=c.w/c.h,sw=source>ratio?c.h*ratio:c.w,sh=source>ratio?c.h:c.w/ratio;
+    ctx.save();
+    if(o.flip){ctx.translate(W/2,dy+dh/2);ctx.rotate(Math.PI);ctx.translate(-W/2,-(dy+dh/2));}
+    ctx.drawImage(c.src,(c.w-sw)/2,(c.h-sh)/2,sw,sh,0,dy,dw,dh);
+    ctx.restore();
+  }
+  if(o.output==='gopro')return;
   if (!g) return;
   if (L.map?.follow && !L.map.maplibre) { for (const t of followTiles(L.map, gs).tiles) if (!mapTiles.has(t.key)) loadMapTile(L.map.zoom, t.tx, t.ty).then(() => { if (!S.busy) preview(+$('scrub').value); }); }
   const inData = gs >= 0 && gs <= g.n - 1;
@@ -847,7 +856,7 @@ function drawFrame(srcT) {
     } else if (m.flyover) {
       drawFlyover(m,f,gs,g,Math.min(g.n-1,Math.floor(Math.max(0,gs))),inData);
     } else if (m.basemap) {
-      ctx.save(); roundRect(m.x, m.y, m.w, m.h, 18); ctx.clip();
+      ctx.save(); if(m.fullMap){ctx.beginPath();ctx.rect(m.x,m.y,m.w,m.h);}else roundRect(m.x,m.y,m.w,m.h,18);ctx.clip();
       if (m.rotate) {
         ctx.translate(f.anchorX, f.anchorY);
         ctx.rotate(-mapBearing(m, gs));
@@ -870,7 +879,7 @@ function drawFrame(srcT) {
       ctx.fillStyle = '#FFFFFF'; ctx.fillText('© OpenStreetMap contributors', m.x + 16, m.y + m.h - 19);
     }
     if (!m.flyover && !m.maplibre) {
-    ctx.save(); roundRect(m.x, m.y, m.w, m.h, 18); ctx.clip();
+    ctx.save(); if(m.fullMap){ctx.beginPath();ctx.rect(m.x,m.y,m.w,m.h);}else roundRect(m.x,m.y,m.w,m.h,18);ctx.clip();
     if (m.rotate) {
       ctx.translate(f.anchorX, f.anchorY);
       ctx.rotate(-mapBearing(m, gs));
@@ -962,7 +971,7 @@ async function preview(t) {
   try {
     while (pendingT !== null) {
       const tt = pendingT; pendingT = null;
-      await seekTo(tt);
+      if(hasMedia()&&!mapOnly())await seekTo(tt);
       if(S.layout?.map?.maplibre)try{await updateMapLibreFrame(S.layout.map,tt+(+$('offset').value||0),S.track,false);}catch(e){setStatus('MapLibre: '+e.message,'err');}
       drawFrame(tt);
       const off = +$('offset').value || 0, g = S.track;
@@ -973,7 +982,8 @@ async function preview(t) {
   previewing = false;
 }
 function refresh() {
-  if (!hasMedia()) return;
+  if (!canPreview()) return;
+  if(mapOnly()&&!hasMedia())S.total=S.track.n-1;
   buildLayout();
   if (S.layout.map?.basemap) {
     const m = S.layout.map;
@@ -984,7 +994,7 @@ function refresh() {
   $('mapZoomValue').textContent = $('mapZoom').value;
   $('mapAnchorValue').textContent = $('mapAnchor').value + '%';
   $('scrub').max = Math.max(0.1, S.total - 0.1).toFixed(1); $('scrub').disabled = false;
-  $('renderBtn').disabled = !S.track;
+  $('renderBtn').disabled = !S.track || !canPreview();
   $('autoSync').disabled = !(S.track?.has.spd);
   updateSyncInfo();
   preview(+$('scrub').value);
@@ -1108,6 +1118,8 @@ async function render() {
   if (typeof VideoEncoder === 'undefined') { setStatus('This browser cannot encode video (WebCodecs missing). Use a current Edge or Chrome.', 'err'); return; }
   const cfg = await pickEncoderConfig();
   if (!cfg) { setStatus('No H.264 encoder available in this browser.', 'err'); return; }
+  if(!canPreview()){setStatus('Load GoPro media or select Map only and load a GPX/TCX file.','err');return;}
+  if(mapOnly()&&!hasMedia())S.total=S.track.n-1;
   buildLayout();
   if (S.layout.map?.basemap) {
     const m = S.layout.map;
@@ -1165,7 +1177,7 @@ async function render() {
     for (let i = 0; i < N; i++) {
       checkEncoder();
       const srcT = t0 + (t1 - t0) * i / (N - 1);
-      await seekTo(srcT);
+      if(hasMedia()&&!mapOnly())await seekTo(srcT);
       if (S.layout.map?.maplibre) {
         await updateMapLibreFrame(S.layout.map,srcT+(+$('offset').value||0),S.track,true);
       } else if (S.layout.map?.follow && S.layout.map.basemap) {
@@ -1195,7 +1207,7 @@ async function render() {
     const a = $('download'); a.href = url; a.download = name; a.textContent = `Download ${name} (${(blob.size / 1048576).toFixed(1)} MB)`; a.style.display = 'inline';
     const r = $('result'); r.src = url; r.style.display = 'block';
     $('prog').value = 1;
-    const used = S.kind === 'image' ? photosIn(t0, t1) : 0;
+    const used = S.kind === 'image'&&hasMedia() ? photosIn(t0, t1) : 0;
     setStatus(`Done: ${len} s, ${W}×${H}, ${(blob.size / 1048576).toFixed(1)} MB.` +
       (S.kind === 'image' && used < N ? ` Only ${used} photos for ${N} frames, so some repeat; a shorter clip looks smoother.` : ''), 'ok');
   } catch (e) { setStatus('Render failed: ' + (e.message || e), 'err'); }
@@ -1236,8 +1248,9 @@ $('folderIn').addEventListener('change', e => { if (e.target.files.length) useFo
 $('trackIn').addEventListener('change', async e => { const f = e.target.files[0]; if (f) useTrack(await f.text()); });
 $('scrub').addEventListener('input', e => preview(+e.target.value));
 for (const b of document.querySelectorAll('.offset button[data-d]')) b.addEventListener('click', () => { $('offset').value = ((+$('offset').value || 0) + +b.dataset.d).toFixed(1); refresh(); });
+$('outputMode').addEventListener('change',()=>{if(mapOnly()&&!hasMedia()&&S.track){S.total=S.track.n-1;$('scrub').max=S.total-0.1;}});
 $('mapMode').addEventListener('change',()=>{ if($('mapMode').value==='maplibre')$('mapZoom').value='17'; });
-for (const id of ['flyTheme','flyAnchor','flyPitch','flyTerrain','flyHeight','offset', 'optBasemap', 'mapMode', 'optRotateMap', 'optSmoothMap', 'mapZoom', 'mapAnchor', 'optMap', 'optHr', 'optSpd', 'optPwr', 'optTime', 'optFlip', 'optHideEnd', 'privacy']) $(id).addEventListener('input', refresh);
+for (const id of ['outputMode','flyTheme','flyAnchor','flyPitch','flyTerrain','flyHeight','offset', 'optBasemap', 'mapMode', 'optRotateMap', 'optSmoothMap', 'mapZoom', 'mapAnchor', 'optMap', 'optHr', 'optSpd', 'optPwr', 'optTime', 'optFlip', 'optHideEnd', 'privacy']) $(id).addEventListener('input', refresh);
 for(const [id,unit] of [['flyAnchor','%'],['flyPitch','°'],['flyTerrain','×'],['flyHeight',' px']]){
   $(id).addEventListener('input',()=>{$(id+'Value').textContent=$(id).value+unit;});
 }
