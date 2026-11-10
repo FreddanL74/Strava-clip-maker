@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Strava Clip Maker v1.6.1</title>
+<title>Strava Clip Maker v1.6.2</title>
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <style>
   :root {
@@ -65,7 +65,7 @@
 <body>
 <main>
   <header>
-    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v1.6.1</span></h1>
+    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v1.6.2</span></h1>
     <p class="lead">Combine a GoPro video or time-lapse photos with a Garmin GPX or TCX file into a 30-second portrait time-lapse with overlays. Everything runs locally in your browser; no file leaves this computer.</p>
   </header>
 
@@ -109,7 +109,7 @@
       </div>
       <div class="grid2">
         <label>Privacy zone around start (m, 0 = off)<input type="number" id="privacy" value="500" min="0" step="50"></label>
-        <label>Clip length (s)<input type="number" id="clipLen" value="29.5" min="3" max="60" step="0.5"></label>
+        <label>Clip length (s)<input type="number" id="clipLen" value="29.5" min="3" max="600" step="0.5"></label>
         <label>Skip start of video (s)<input type="number" id="trimStart" value="0" min="0" step="1"></label>
         <label>Skip end of video (s)<input type="number" id="trimEnd" value="0" min="0" step="1"></label>
       </div>
@@ -885,7 +885,7 @@ async function render() {
       }
     } else { setStatus('Loading static map tiles…'); await prepareMapTiles(); }
   }
-  const len = Math.min(60, Math.max(3, +$('clipLen').value || 29.5)), N = Math.round(len * FPS);
+  const len = Math.min(600, Math.max(3, +$('clipLen').value || 29.5)), N = Math.round(len * FPS);
   const t0 = Math.max(0, +$('trimStart').value || 0), t1 = S.total - Math.max(0, +$('trimEnd').value || 0) - 0.05;
   if (t1 - t0 < 1) { setStatus('Nothing left of the video after trimming.', 'err'); return; }
   S.busy = true; lock(true); $('download').style.display = 'none'; $('result').style.display = 'none';
