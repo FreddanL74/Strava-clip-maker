@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Strava Clip Maker v2.2.0</title>
+<title>Strava Clip Maker v2.2.1</title>
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <style>
   :root {
@@ -66,7 +66,7 @@
 <body>
 <main>
   <header>
-    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.2.0</span></h1>
+    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.2.1</span></h1>
     <p class="lead">Combine a GoPro video or time-lapse photos with a Garmin GPX or TCX file into a 30-second portrait time-lapse with overlays. Everything runs locally in your browser; no file leaves this computer.</p>
   </header>
 
@@ -380,7 +380,11 @@ function clipAt(t) { let c = S.clips[0]; for (const x of S.clips) if (t >= x.sta
 const hasMedia = () => S.total > 0 && (S.kind === 'image' ? S.photos.length > 0 : S.clips.length > 0);
 const mapOnly=()=>$('outputMode').value==='map';
 const canPreview=()=>hasMedia()||(mapOnly()&&!!S.track?.has.map);
-const mediaName = () => (S.kind === 'image' ? S.photos[0].file.name : S.clips[0].file.name).replace(/\.[^.]+$/, '') || 'clip';
+const mediaName = () => {
+  const file=hasMedia()?(S.kind==='image'?S.photos[0]?.file:S.clips[0]?.file):null;
+  const fallback=S.track?'gps_map':'clip';
+  return (file?.name||fallback).replace(/\.[^.]+$/,'')||fallback;
+};
 let seekChain = Promise.resolve();
 function seekTo(t) { const p = seekChain.then(() => doSeek(t)); seekChain = p.catch(() => {}); return p; }
 // Positions the source at t seconds and returns S.cur = { src, w, h } for drawing
@@ -499,8 +503,8 @@ function cameraPosition(m, gs) {
   }
   return w ? {x:x*m.world/w,y:y*m.world/w} : {x:mercX(g.lon[safe])*m.world,y:mercY(g.lat[safe])*m.world};
 }
-function mapBearing(m, gs) {
-  if (!m.rotate) return 0;
+function mapBearing(m, gs, forceHeading=false) {
+  if (!m.rotate && !forceHeading) return 0;
   const g=S.track, i=Math.max(0,Math.min(g.n-1,Math.round(gs)));
   // Average displacement vectors, not angles: no wrap discontinuity at north.
   let sx=0,sy=0,weight=0;
@@ -759,6 +763,11 @@ async function updateMapLibreFrame(m,gs,g,waitForTiles=false){
     maplibreRouteTrack=g;maplibreRoutePrivacy=m.hidden;
   }
   updateMapLibreRoute(map,m,g,gs);
+  // Geographic heading is independent of whether the camera rotates.
+  // A map-aligned icon otherwise always points to geographic north.
+  if(map.getLayer('fly-rider-symbol')){
+    map.setLayoutProperty('fly-rider-symbol','icon-rotate',mapBearing(m,gs,true)*180/Math.PI);
+  }
   applyFlyTheme(map,desiredFlyTheme(m,gs,g));
   if(map._flyTerrainExaggeration!==m.terrain){
     map.setTerrain({source:'fly-dem',exaggeration:m.terrain});
@@ -1253,7 +1262,7 @@ async function render() {
     $('prog').value = 1;
     const used = S.kind === 'image'&&hasMedia() ? photosIn(t0, t1) : 0;
     setStatus(`Done: ${len} s, ${W}×${H}, ${(blob.size / 1048576).toFixed(1)} MB.` +
-      (S.kind === 'image' && used < N ? ` Only ${used} photos for ${N} frames, so some repeat; a shorter clip looks smoother.` : ''), 'ok');
+      (S.kind === 'image' && hasMedia() && used < N ? ` Only ${used} photos for ${N} frames, so some repeat; a shorter clip looks smoother.` : ''), 'ok');
   } catch (e) { setStatus('Render failed: ' + (e.message || e), 'err'); }
   S.busy = false; lock(false);
 }
