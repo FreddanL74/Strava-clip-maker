@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Strava Clip Maker v1.7.1</title>
+<title>Strava Clip Maker v1.7.2</title>
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <style>
   :root {
@@ -65,7 +65,7 @@
 <body>
 <main>
   <header>
-    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v1.7.1</span></h1>
+    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v1.7.2</span></h1>
     <p class="lead">Combine a GoPro video or time-lapse photos with a Garmin GPX or TCX file into a 30-second portrait time-lapse with overlays. Everything runs locally in your browser; no file leaves this computer.</p>
   </header>
 
@@ -77,13 +77,9 @@
       </label>
       <label class="field">…or a whole folder (for example D:\DCIM). The page picks the photos or video recorded during the activity. The browser asks to "upload" the files; they are only read locally.
         <input type="file" id="folderIn" webkitdirectory multiple>
-        <small>Preferred folder: D:\\DCIM</small>
-        <button type="button" id="pickMediaFolder">Choose media folder (remember location)</button>
       </label>
       <label class="field">Activity file (GPX or TCX)
         <input type="file" id="trackIn" accept=".gpx,.tcx,application/gpx+xml,application/xml">
-        <small>Preferred folder: C:\\Users\\ne9627\\Downloads</small>
-        <button type="button" id="pickTrackFile">Choose GPX/TCX (remember location)</button>
       </label>
       <p class="info" id="fileInfo">No files loaded.</p>
     </section>
@@ -918,7 +914,8 @@ async function render() {
       setStatus('Loading map tiles for animated preview…');
       // Preload only tiles needed along the chosen clip, with a strict request cap.
       const a = Math.max(0, +$('trimStart').value || 0);
-      const b = S.total - Math.max(0, +$('trimEnd').value || 0) - .05;
+      const duration = Math.min(600, Math.max(3, +$('clipLen').value || 29.5));
+      const b = Math.min(S.total - Math.max(0, +$('trimEnd').value || 0) - .05, a + duration);
       const required = new Map();
       const steps = Math.max(32, Math.ceil(b - a));
       for (let j = 0; j <= steps; j++) {
@@ -926,16 +923,13 @@ async function render() {
         for (const t of followTiles(m, srcT + (+$('offset').value || 0)).tiles)
           required.set(t.key, t);
       }
-      if (required.size > 350) {
-        setStatus('Animated map needs too many tiles. Shorten the source range or choose Static map.', 'err');
-        return;
-      }
-      // Limit parallel requests to avoid overwhelming the public tile service.
-      const jobs = [...required.values()];
+      // Preload a bounded subset. Remaining tiles are fetched as needed
+      // during export, so high zoom never prevents rendering.
+      const jobs = [...required.values()].slice(0, 120);
       for (let k = 0; k < jobs.length; k += 6) {
         await Promise.all(jobs.slice(k, k + 6).map(t => loadMapTile(m.zoom, t.tx, t.ty)));
       }
-      if (![...required.keys()].some(key => loadedTiles.has(key))) {
+      if (!jobs.some(t => loadedTiles.has(t.key))) {
         setStatus('Map background could not be loaded. Check browser network access and tile server availability.', 'err');
         return;
       }
@@ -956,7 +950,14 @@ async function render() {
     for (let i = 0; i < N; i++) {
       if (encErr) throw encErr;
       const srcT = t0 + (t1 - t0) * i / (N - 1);
-      await seekTo(srcT); drawFrame(srcT);
+      await seekTo(srcT);
+      if (S.layout.map?.follow && S.layout.map.basemap) {
+        const m = S.layout.map;
+        const needed = followTiles(m, srcT + (+$('offset').value || 0)).tiles.filter(t => !loadedTiles.has(t.key));
+        for(let k=0;k<needed.length;k+=6)
+          await Promise.all(needed.slice(k,k+6).map(t=>loadMapTile(m.zoom,t.tx,t.ty)));
+      }
+      drawFrame(srcT);
       const frame = new VideoFrame(canvas, { timestamp: Math.round(i * 1e6 / FPS), duration: Math.round(1e6 / FPS) });
       enc.encode(frame, { keyFrame: i % 60 === 0 }); frame.close();
       while (enc.encodeQueueSize > 6) await sleep(5);
@@ -1008,36 +1009,6 @@ async function useTrack(text) {
     defaultOffset(); updateFileInfo(); setStatus(''); refresh();
   } catch (err) { if (!S.track) updateFileInfo(); setStatus(err.message, 'err'); }
 }
-// File System Access pickers remember the last location for each picker ID
-// in supporting browsers. Local paths cannot be set by a website.
-$('pickMediaFolder').addEventListener('click', async () => {
-  if (!window.showDirectoryPicker) { $('folderIn').click(); return; }
-  try {
-    const dir = await window.showDirectoryPicker({id:'strava-media-dcim',mode:'read'});
-    const files=[];
-    async function walk(d,depth) {
-      if(depth>4)return;
-      for await (const entry of d.values()){
-        if(entry.kind==='file' && /\\.(mp4|mov|jpe?g)$/i.test(entry.name))
-          files.push(await entry.getFile());
-        else if(entry.kind==='directory') await walk(entry,depth+1);
-      }
-    }
-    setStatus('Scanning selected media folder…');
-    await walk(dir,0);
-    if(files.length)await useFolder(files);
-    else setStatus('No supported videos or JPG images found in the folder.','err');
-  } catch(e) { if(e.name!=='AbortError')setStatus('Folder access failed: '+e.message,'err'); }
-});
-$('pickTrackFile').addEventListener('click', async () => {
-  if (!window.showOpenFilePicker) { $('trackIn').click(); return; }
-  try {
-    const handles=await window.showOpenFilePicker({id:'strava-track-downloads',multiple:false,
-      types:[{description:'GPS activity files',accept:{'application/octet-stream':['.gpx','.tcx']}}]});
-    const file=await handles[0].getFile();
-    await useTrack(await file.text());
-  } catch(e) { if(e.name!=='AbortError')setStatus('GPS file selection failed: '+e.message,'err'); }
-});
 $('videoIn').addEventListener('change', e => { if (e.target.files.length) useMediaFiles(e.target.files); });
 $('folderIn').addEventListener('change', e => { if (e.target.files.length) useFolder(e.target.files); });
 $('trackIn').addEventListener('change', async e => { const f = e.target.files[0]; if (f) useTrack(await f.text()); });
