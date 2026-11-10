@@ -635,6 +635,7 @@ async function ensureMapLibre(){
           'fill-extrusion-opacity':0.82}});
     }
     maplibreMap=map;
+    map._flyTerrainExaggeration=2.2;
     map.resize();
     return map;
   })().catch(e=>{maplibreReady=null;maplibreError=e;throw e;});
@@ -723,7 +724,10 @@ async function updateMapLibreFrame(m,gs,g,waitForTiles=false){
   }
   updateMapLibreRoute(map,m,g,gs);
   applyFlyTheme(map,desiredFlyTheme(m,gs,g));
-  if(map.getTerrain()?.source==='fly-dem')map.setTerrain({source:'fly-dem',exaggeration:m.terrain});
+  if(map._flyTerrainExaggeration!==m.terrain){
+    map.setTerrain({source:'fly-dem',exaggeration:m.terrain});
+    map._flyTerrainExaggeration=m.terrain;
+  }
   const bearing=mapBearing(m,gs)*180/Math.PI;
   const topPadding=Math.max(0,Math.round((2*m.anchor-1)*m.h));
   map.jumpTo({center:[lon,lat],zoom:m.zoom,pitch:m.pitch,bearing,
