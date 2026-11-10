@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Strava Clip Maker v2.0.1</title>
+<title>Strava Clip Maker v2.0.2</title>
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <style>
   :root {
@@ -66,7 +66,7 @@
 <body>
 <main>
   <header>
-    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.0.1</span></h1>
+    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.0.2</span></h1>
     <p class="lead">Combine a GoPro video or time-lapse photos with a Garmin GPX or TCX file into a 30-second portrait time-lapse with overlays. Everything runs locally in your browser; no file leaves this computer.</p>
   </header>
 
@@ -1148,11 +1148,22 @@ async function render() {
   try {
     const target = new ArrayBufferTarget();
     const muxer = new Muxer({ target, video: { codec: 'avc', width: W, height: H, frameRate: FPS }, fastStart: 'in-memory', firstTimestampBehavior: 'offset' });
-    const enc = new VideoEncoder({ output: (chunk, meta) => muxer.addVideoChunk(chunk, meta), error: e => { encErr = e; } });
-    enc.configure(cfg);
+    let enc;
+    enc = new VideoEncoder({
+      output: (chunk, meta) => {try{muxer.addVideoChunk(chunk, meta);}catch(e){encErr=e;}},
+      error: e => {encErr=e;console.error('Strava Clip Maker VideoEncoder error:',e);}
+    });
+    // Software encoding is more reliable when a WebGL 3D map is rendered
+    // concurrently with WebCodecs on GPUs with limited video resources.
+    const renderCfg=S.layout.map?.maplibre?{...cfg,hardwareAcceleration:'prefer-software'}:cfg;
+    enc.configure(renderCfg);
+    const checkEncoder=()=>{
+      if(encErr)throw Error('Video encoder error: '+(encErr.message||String(encErr)));
+      if(enc.state!=='configured')throw Error('Video encoder closed unexpectedly. The browser may have exhausted GPU/video encoder resources.');
+    };
     const started = performance.now();
     for (let i = 0; i < N; i++) {
-      if (encErr) throw encErr;
+      checkEncoder();
       const srcT = t0 + (t1 - t0) * i / (N - 1);
       await seekTo(srcT);
       if (S.layout.map?.maplibre) {
@@ -1164,16 +1175,21 @@ async function render() {
           await Promise.all(needed.slice(k,k+6).map(t=>loadMapTile(m.zoom,t.tx,t.ty)));
       }
       drawFrame(srcT);
+      checkEncoder();
       const frame = new VideoFrame(canvas, { timestamp: Math.round(i * 1e6 / FPS), duration: Math.round(1e6 / FPS) });
-      enc.encode(frame, { keyFrame: i % 60 === 0 }); frame.close();
-      while (enc.encodeQueueSize > 6) await sleep(5);
+      try {checkEncoder();enc.encode(frame, { keyFrame: i % 60 === 0 });}
+      finally {frame.close();}
+      while (enc.encodeQueueSize > 3) {await sleep(10);checkEncoder();}
       if (i % 5 === 0) {
         $('prog').value = i / N;
         const el = (performance.now() - started) / 1000, eta = i ? el / i * (N - i) : 0;
         setStatus(`Rendering frame ${i + 1} of ${N}` + (i > 10 ? ` · about ${fmtDur(eta)} left` : ''));
       }
     }
-    await enc.flush(); enc.close(); muxer.finalize();
+    checkEncoder();
+    await enc.flush();
+    if(encErr)throw Error('Video encoder error during flush: '+(encErr.message||String(encErr)));
+    enc.close();muxer.finalize();
     const blob = new Blob([target.buffer], { type: 'video/mp4' }), url = URL.createObjectURL(blob);
     const name = mediaName() + '_strava.mp4';
     const a = $('download'); a.href = url; a.download = name; a.textContent = `Download ${name} (${(blob.size / 1048576).toFixed(1)} MB)`; a.style.display = 'inline';
