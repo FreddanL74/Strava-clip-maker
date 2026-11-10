@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Strava Clip Maker v2.1.0</title>
+<title>Strava Clip Maker v2.2.0</title>
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <style>
   :root {
@@ -66,7 +66,7 @@
 <body>
 <main>
   <header>
-    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.1.0</span></h1>
+    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.2.0</span></h1>
     <p class="lead">Combine a GoPro video or time-lapse photos with a Garmin GPX or TCX file into a 30-second portrait time-lapse with overlays. Everything runs locally in your browser; no file leaves this computer.</p>
   </header>
 
@@ -732,15 +732,22 @@ function updateMapLibreRoute(map,m,g,gs){
   const riderData={type:'Feature',geometry:{type:'Point',coordinates:rider},properties:{}};
   if(map.getSource('fly-rider'))map.getSource('fly-rider').setData(riderData);
   else {
-    const c=document.createElement('canvas');c.width=64;c.height=64;
+    // Volvo-style navigation marker: ground-plane circular ring with an
+    // arrow inside. MapLibre pitches the ground-aligned icon into an oval.
+    const c=document.createElement('canvas');c.width=128;c.height=128;
     const p=c.getContext('2d');
-    p.beginPath();p.moveTo(32,7);p.lineTo(12,53);p.lineTo(32,43);p.lineTo(52,53);p.closePath();
-    p.fillStyle='#ef3c30';p.fill();p.strokeStyle='#ffffff';p.lineWidth=5;p.lineJoin='round';p.stroke();
-    map.addImage('fly-rider-icon',p.getImageData(0,0,64,64),{pixelRatio:2});
+    p.beginPath();p.arc(64,64,51,0,2*Math.PI);
+    p.fillStyle='rgba(16,35,48,.58)';p.fill();
+    p.lineWidth=9;p.strokeStyle='#ffffff';p.stroke();
+    p.beginPath();p.arc(64,64,43,0,2*Math.PI);
+    p.lineWidth=3;p.strokeStyle='#1d99ee';p.stroke();
+    p.beginPath();p.moveTo(64,22);p.lineTo(38,92);p.lineTo(64,78);p.lineTo(90,92);p.closePath();
+    p.fillStyle='#ef4539';p.fill();p.lineWidth=5;p.strokeStyle='#ffffff';p.lineJoin='round';p.stroke();
+    map.addImage('fly-rider-icon',p.getImageData(0,0,128,128),{pixelRatio:2});
     map.addSource('fly-rider',{type:'geojson',data:riderData});
     map.addLayer({id:'fly-rider-symbol',type:'symbol',source:'fly-rider',
-      layout:{'icon-image':'fly-rider-icon','icon-size':1.1,'icon-allow-overlap':true,
-        'icon-ignore-placement':true,'icon-pitch-alignment':'viewport','icon-rotation-alignment':'viewport'}});
+      layout:{'icon-image':'fly-rider-icon','icon-size':1.15,'icon-allow-overlap':true,
+        'icon-ignore-placement':true,'icon-pitch-alignment':'map','icon-rotation-alignment':'map'}});
   }
 }
 async function updateMapLibreFrame(m,gs,g,waitForTiles=false){
@@ -831,6 +838,36 @@ function drawFlyover(m,f,gs,g,gi,inData) {
     ctx.fillStyle='#F44336';ctx.fill();ctx.lineWidth=3;ctx.strokeStyle='#fff';ctx.stroke();
   }
 }
+// Compact readable HUD for full-frame video or map-only exports.
+// Uses the same telemetry selections and timestamps as the combined layout.
+function drawMetricsOverlay(o,g,gs){
+  const keys=['hr','spd','pwr','time'].filter(k=>o[k]&&(k==='time'||g.has[k]));
+  if(!keys.length)return;
+  const gap=12,margin=32,columns=keys.length;
+  const width=(W-2*margin-gap*(columns-1))/columns;
+  const y=o.output==='map'?H-176:H-185;
+  ctx.save();
+  for(let i=0;i<keys.length;i++){
+    const k=keys[i],x=margin+i*(width+gap);
+    ctx.fillStyle='rgba(14,22,30,.78)';
+    roundRect(x,y,width,132,18);ctx.fill();
+    ctx.fillStyle='#c4ccd4';ctx.font='bold 22px Arial, sans-serif';
+    ctx.textAlign='left';ctx.textBaseline='top';
+    ctx.fillText(LABEL[k]+(UNIT[k]?' '+UNIT[k]:''),x+18,y+16);
+    let value='–';
+    if(k==='time')value=fmtHM(new Date(g.t0+gs*1000));
+    else if(gs>=0&&gs<=g.n-1){
+      const v=valueAt(g[k],gs);
+      if(Number.isFinite(v))value=k==='spd'?v.toFixed(1):String(Math.round(v));
+    }
+    let fontSize=49;
+    do{ctx.font='bold '+fontSize+'px Arial, sans-serif';fontSize-=2;}
+    while(fontSize>25&&ctx.measureText(value).width>width-36);
+    ctx.fillStyle=COLOR[k]||'#ffffff';
+    ctx.fillText(value,x+18,y+63);
+  }
+  ctx.restore();
+}
 function drawFrame(srcT) {
   const L = S.layout, o = L.o, g = S.track, off = +$('offset').value || 0, gs = srcT + off;
   ctx.fillStyle = '#111111'; ctx.fillRect(0, 0, W, H);
@@ -842,7 +879,10 @@ function drawFrame(srcT) {
     ctx.drawImage(c.src,(c.w-sw)/2,(c.h-sh)/2,sw,sh,0,dy,dw,dh);
     ctx.restore();
   }
-  if(o.output==='gopro')return;
+  if(o.output==='gopro'){
+    if(g)drawMetricsOverlay(o,g,gs);
+    return;
+  }
   if (!g) return;
   if (L.map?.follow && !L.map.maplibre) { for (const t of followTiles(L.map, gs).tiles) if (!mapTiles.has(t.key)) loadMapTile(L.map.zoom, t.tx, t.ty).then(() => { if (!S.busy) preview(+$('scrub').value); }); }
   const inData = gs >= 0 && gs <= g.n - 1;
@@ -943,6 +983,10 @@ function drawFrame(srcT) {
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText('N', cx, cy - 43);
     ctx.restore();
+  }
+  if(o.output==='map'){
+    drawMetricsOverlay(o,g,gs);
+    return;
   }
   // stat tiles
   for (const t of L.tiles) {
