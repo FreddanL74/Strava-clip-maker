@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Strava Clip Maker v1.6.2</title>
+<title>Strava Clip Maker v1.7.0</title>
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <style>
   :root {
@@ -65,7 +65,7 @@
 <body>
 <main>
   <header>
-    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v1.6.2</span></h1>
+    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v1.7.0</span></h1>
     <p class="lead">Combine a GoPro video or time-lapse photos with a Garmin GPX or TCX file into a 30-second portrait time-lapse with overlays. Everything runs locally in your browser; no file leaves this computer.</p>
   </header>
 
@@ -90,7 +90,7 @@
         <label><input type="checkbox" id="optMap" checked> GPS trace (map) <small data-for="map"></small></label>
         <label><input type="checkbox" id="optBasemap" checked> OpenStreetMap background (requires internet)</label>
         <label>Map movement
-          <select id="mapMode"><option value="static">Static — whole route</option><option value="follow">Animated — follow position</option></select>
+          <select id="mapMode"><option value="static">Static — whole route</option><option value="follow">Animated — follow position</option><option value="flyover">3D Flyover — perspective navigation (beta)</option></select>
         </label>
         <label><input type="checkbox" id="optRotateMap"> Rotate following map in direction of travel</label>
         <label>Following map zoom <input type="range" id="mapZoom" min="10" max="15" step="1" value="12"> <output id="mapZoomValue">12</output></label>
@@ -497,7 +497,7 @@ function followTiles(m, gs) {
   const p=cameraPosition(m,gs), anchorY=m.y+m.h*m.anchor;
   const left=p.x-m.w/2,upper=p.y-m.h*m.anchor;
   // Rotation around rider anchor. Cover the full rotated viewport.
-  const extra=m.rotate?Math.hypot(m.w/2,Math.max(m.anchor,1-m.anchor)*m.h)+32:0;
+  const extra=m.flyover ? Math.max(m.w,m.h)*1.7 : m.rotate?Math.hypot(m.w/2,Math.max(m.anchor,1-m.anchor)*m.h)+32:0;
   const result=[];
   const minX=m.rotate?p.x-extra:p.x-m.w/2;
   const maxX=m.rotate?p.x+extra:p.x+m.w/2;
@@ -525,7 +525,7 @@ async function prepareMapTiles() {
 }
 // ---------- layout ----------
 const opt = () => ({
-  map: $('optMap').checked && !!S.track?.has.map, basemap: $('optBasemap').checked, follow: $('mapMode').value === 'follow', rotate: $('optRotateMap').checked, smooth: $('optSmoothMap').checked, zoomLevel: +$('mapZoom').value, anchor: +$('mapAnchor').value / 100, hr: $('optHr').checked && !!S.track?.has.hr,
+  map: $('optMap').checked && !!S.track?.has.map, basemap: $('optBasemap').checked, follow: $('mapMode').value !== 'static', flyover: $('mapMode').value === 'flyover', rotate: $('optRotateMap').checked, smooth: $('optSmoothMap').checked, zoomLevel: +$('mapZoom').value, anchor: +$('mapAnchor').value / 100, hr: $('optHr').checked && !!S.track?.has.hr,
   spd: $('optSpd').checked && !!S.track?.has.spd, pwr: $('optPwr').checked && !!S.track?.has.pwr,
   time: $('optTime').checked, flip: $('optFlip').checked, hideEnd: $('optHideEnd').checked,
   privacy: Math.max(0, +$('privacy').value || 0)
@@ -568,7 +568,7 @@ function buildLayout() {
     const full = new Path2D(); let pen = false;
     for (let i = 0; i < g.n; i++) { if (hidden[i]) { pen = false; continue; } if (pen) full.lineTo(px[i], py[i]); else { full.moveTo(px[i], py[i]); pen = true; } }
     map = { x, y, w: maxW, h: o.follow && o.basemap ? maxH : h, px, py, hidden, full,
-      basemap: o.basemap, follow: o.follow && o.basemap, rotate: o.rotate && o.follow && o.basemap, smooth: o.smooth, anchor: o.anchor, zoom, world: 256 * 2 ** zoom, tiles, ready: false };
+      basemap: o.basemap, follow: o.follow && o.basemap, rotate: (o.rotate || o.flyover) && o.follow && o.basemap, flyover: o.flyover && o.basemap, smooth: o.smooth, anchor: o.anchor, zoom, world: 256 * 2 ** zoom, tiles, ready: false };
     tilesY = y + map.h + 30;
   }
   const gap = 20, tw = metrics.length ? (1000 - gap * (metrics.length - 1)) / metrics.length : 0;
@@ -581,6 +581,54 @@ const UNIT = { hr: 'bpm', spd: 'km/h', pwr: 'W', time: '' };
 const COLOR = { hr: '#FF5A5A', spd: '#3FC1FF', pwr: '#FFC83D', time: '#FFFFFF' };
 function valueAt(arr, g) { if (!arr || g < 0 || g > arr.length - 1) return NaN; const i = Math.floor(g), f = g - i; return i + 1 < arr.length ? arr[i] + (arr[i + 1] - arr[i]) * f : arr[i]; }
 function roundRect(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x, y, w, h, r) : ctx.rect(x, y, w, h); }
+// Flyover uses a perspective-projected offscreen canvas. It is rendered by the
+// same 2D canvas pipeline as MP4, so preview and exported frames match.
+// This is a tilted map, not a true 3D-building renderer.
+const flyCanvas=document.createElement('canvas'), flyCtx=flyCanvas.getContext('2d');
+function drawFlyover(m,f,gs,g,gi,inData) {
+  const cw=m.w,ch=m.h,scale=1.8;
+  flyCanvas.width=Math.round(cw*scale);flyCanvas.height=Math.round(ch*scale);
+  const fc=flyCtx, cx=flyCanvas.width/2,cy=flyCanvas.height*.66;
+  fc.fillStyle='#26313c';fc.fillRect(0,0,flyCanvas.width,flyCanvas.height);
+  fc.save();fc.translate(cx,cy);fc.rotate(-mapBearing(m,gs));
+  const px=cameraPosition(m,gs), left=px.x-cx,upper=px.y-cy;
+  for(const t of f.tiles){
+    const img=loadedTiles.get(t.key);
+    if(img)fc.drawImage(img,t.tx*256-left-cx,t.ty*256-upper-cy,256,256);
+  }
+  const recent=Math.max(0,gi-90);
+  for(const [a,b,color,width] of [[0,recent,'#4785C7',7],[recent,gi,'#FF8C00',9]]){
+    if(b<=a)continue;
+    fc.beginPath();let pen=false;
+    for(let i=a;i<=b;i++){
+      if(m.hidden[i]){pen=false;continue;}
+      const x=mercX(g.lon[i])*m.world-px.x;
+      const y=mercY(g.lat[i])*m.world-px.y;
+      if(pen)fc.lineTo(x,y);else{fc.moveTo(x,y);pen=true;}
+    }
+    fc.strokeStyle=color;fc.lineWidth=width;fc.lineJoin='round';fc.stroke();
+  }
+  fc.restore();
+  // Perspective: compress horizontal span towards the horizon.
+  // Scanline strips avoid WebGL readback and remain compatible with VideoEncoder.
+  ctx.save();roundRect(m.x,m.y,m.w,m.h,18);ctx.clip();
+  ctx.fillStyle='#253543';ctx.fillRect(m.x,m.y,m.w,m.h);
+  const strips=120,stripH=m.h/strips;
+  for(let j=0;j<strips;j++){
+    const v=(j+.5)/strips;
+    const depth=.22+.78*v*v;
+    const srcY=cy+(v-.66)*flyCanvas.height*.92;
+    const srcW=Math.min(flyCanvas.width,cw/depth);
+    ctx.drawImage(flyCanvas,(flyCanvas.width-srcW)/2,Math.max(0,Math.min(flyCanvas.height-2,srcY)),srcW,2,
+      m.x,m.y+j*stripH,m.w,stripH+1);
+  }
+  ctx.restore();
+  if(inData&&!m.hidden[gi]){
+    const x=m.x+m.w/2,y=m.y+m.h*.77;
+    ctx.beginPath();ctx.moveTo(x,y-20);ctx.lineTo(x-15,y+14);ctx.lineTo(x,y+7);ctx.lineTo(x+15,y+14);ctx.closePath();
+    ctx.fillStyle='#F44336';ctx.fill();ctx.lineWidth=3;ctx.strokeStyle='#fff';ctx.stroke();
+  }
+}
 function drawFrame(srcT) {
   const L = S.layout, o = L.o, g = S.track, off = +$('offset').value || 0, gs = srcT + off;
   ctx.fillStyle = '#111111'; ctx.fillRect(0, 0, W, H);
@@ -598,7 +646,9 @@ function drawFrame(srcT) {
     const m = L.map;
     ctx.fillStyle = '#262626'; roundRect(m.x, m.y, m.w, m.h, 18); ctx.fill();
     const f = m.follow ? followTiles(m, gs) : null;
-    if (m.basemap) {
+    if (m.flyover) {
+      drawFlyover(m,f,gs,g,Math.min(g.n-1,Math.floor(Math.max(0,gs))),inData);
+    } else if (m.basemap) {
       ctx.save(); roundRect(m.x, m.y, m.w, m.h, 18); ctx.clip();
       if (m.rotate) {
         ctx.translate(f.anchorX, f.anchorY);
@@ -621,6 +671,7 @@ function drawFrame(srcT) {
       ctx.font = '20px Arial, sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
       ctx.fillStyle = '#FFFFFF'; ctx.fillText('© OpenStreetMap contributors', m.x + 16, m.y + m.h - 19);
     }
+    if (!m.flyover) {
     ctx.save(); roundRect(m.x, m.y, m.w, m.h, 18); ctx.clip();
     if (m.rotate) {
       ctx.translate(f.anchorX, f.anchorY);
@@ -660,6 +711,7 @@ function drawFrame(srcT) {
       const dotY = m.follow ? f.anchorY : valueAt(m.py, gs);
       ctx.beginPath(); ctx.arc(dotX, dotY, 14, 0, Math.PI * 2);
       ctx.fillStyle = '#FF2020'; ctx.fill(); ctx.lineWidth = 5; ctx.strokeStyle = '#FFFFFF'; ctx.stroke();
+    }
     }
   }
   // North compass: screen-fixed in the top-right of the map.
