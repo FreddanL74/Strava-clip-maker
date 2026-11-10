@@ -637,7 +637,7 @@ async function updateMapLibreFrame(m,gs,g,waitForTiles=false){
   const bearing=mapBearing(m,gs)*180/Math.PI;
   map.jumpTo({center:[lon,lat],zoom:m.zoom,pitch:60,bearing});
   if(waitForTiles){
-    await Promise.race([new Promise(resolve=>map.once('idle',resolve)),new Promise(resolve=>setTimeout(resolve,5000))]);
+    await Promise.race([new Promise(resolve=>map.once('render',resolve)),new Promise(resolve=>setTimeout(resolve,1500))]);
   }else await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
 }
 function drawMapLibreFrame(m,gs,g){
@@ -1101,6 +1101,7 @@ $('folderIn').addEventListener('change', e => { if (e.target.files.length) useFo
 $('trackIn').addEventListener('change', async e => { const f = e.target.files[0]; if (f) useTrack(await f.text()); });
 $('scrub').addEventListener('input', e => preview(+e.target.value));
 for (const b of document.querySelectorAll('.offset button[data-d]')) b.addEventListener('click', () => { $('offset').value = ((+$('offset').value || 0) + +b.dataset.d).toFixed(1); refresh(); });
+$('mapMode').addEventListener('change',()=>{ if($('mapMode').value==='maplibre')$('mapZoom').value='17'; });
 for (const id of ['offset', 'optBasemap', 'mapMode', 'optRotateMap', 'optSmoothMap', 'mapZoom', 'mapAnchor', 'optMap', 'optHr', 'optSpd', 'optPwr', 'optTime', 'optFlip', 'optHideEnd', 'privacy']) $(id).addEventListener('input', refresh);
 $('autoSync').addEventListener('click', autoSync);
 $('renderBtn').addEventListener('click', render);
