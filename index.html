@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Strava Clip Maker v1.8.0</title>
+<title>Strava Clip Maker v1.9.0</title>
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <style>
   :root {
@@ -66,7 +66,7 @@
 <body>
 <main>
   <header>
-    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v1.8.0</span></h1>
+    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v1.9.0</span></h1>
     <p class="lead">Combine a GoPro video or time-lapse photos with a Garmin GPX or TCX file into a 30-second portrait time-lapse with overlays. Everything runs locally in your browser; no file leaves this computer.</p>
   </header>
 
@@ -581,6 +581,10 @@ function buildLayout() {
 // OpenFreeMap supplies vector buildings; public Terrarium DEM supplies terrain.
 // Map rendering is asynchronous, so export explicitly waits for a rendered frame.
 let maplibre=null, maplibreMap=null, maplibreError=null, maplibreReady=null;
+let maplibreRouteTrack=null, maplibreRoutePrivacy=null, maplibreFrameSerial=0;
+const contourCache=new Map();
+const contourCanvas=document.createElement('canvas');contourCanvas.width=256;contourCanvas.height=256;
+const contourCtx=contourCanvas.getContext('2d',{willReadFrequently:true});
 async function ensureMapLibre(){
   if(maplibreMap)return maplibreMap;
   if(maplibreReady)return maplibreReady;
@@ -601,6 +605,8 @@ async function ensureMapLibre(){
       map.addSource('fly-dem',{type:'raster-dem',tiles:['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],tileSize:256,maxzoom:15,encoding:'terrarium'});
       map.setTerrain({source:'fly-dem',exaggeration:1.35});
     }
+    map.addSource('fly-contours',{type:'geojson',data:{type:'FeatureCollection',features:[]}});
+    map.addLayer({id:'fly-contour-lines',type:'line',source:'fly-contours',paint:{'line-color':'#815d3e','line-width':1.4,'line-opacity':.8}});
     const style=map.getStyle();
     const vectorSource=Object.keys(style.sources).find(k=>style.sources[k].type==='vector');
     if(vectorSource && !map.getLayer('fly-buildings')){
@@ -616,28 +622,121 @@ async function ensureMapLibre(){
   })().catch(e=>{maplibreReady=null;maplibreError=e;throw e;});
   return maplibreReady;
 }
-function updateMapLibreRoute(map,m,g){
-  const coordinates=[];
-  for(let i=0;i<g.n;i++)if(!m.hidden[i])coordinates.push([g.lon[i],g.lat[i]]);
-  const route={type:'Feature',geometry:{type:'LineString',coordinates},properties:{}};
-  if(map.getSource('fly-route'))map.getSource('fly-route').setData(route);
-  else {
-    map.addSource('fly-route',{type:'geojson',data:route});
-    map.addLayer({id:'fly-route-line',type:'line',source:'fly-route',
-      paint:{'line-color':'#4785c7','line-width':5,'line-opacity':.8}});
+function flyLine(coords){return {type:'Feature',geometry:{type:'LineString',coordinates:coords},properties:{}};}
+function updateMapLibreRoute(map,m,g,gs){
+  const current=Math.max(0,Math.min(g.n-1,Math.floor(gs)));
+  const recent=Math.max(0,current-90);
+  // Split at privacy-hidden points so no line bridges private locations.
+  const segments=(start,end)=>{
+    const features=[];let points=[];
+    for(let i=start;i<=end;i++){
+      if(m.hidden[i]||!Number.isFinite(g.lon[i])||!Number.isFinite(g.lat[i])){
+        if(points.length>1)features.push(flyLine(points));points=[];continue;
+      }
+      points.push([g.lon[i],g.lat[i]]);
+    }
+    if(points.length>1)features.push(flyLine(points));
+    return {type:'FeatureCollection',features};
+  };
+  for(const [id,start,end,color,width] of [
+    ['fly-past',0,recent,'#4785C7',5],
+    ['fly-recent',recent,current,'#FF8C00',8]
+  ]){
+    const data=segments(start,end);
+    if(map.getSource(id))map.getSource(id).setData(data);
+    else{
+      map.addSource(id,{type:'geojson',data});
+      map.addLayer({id:id+'-line',type:'line',source:id,
+        paint:{'line-color':color,'line-width':width,'line-opacity':.95}});
+    }
   }
 }
-let maplibreRouteTrack=null;
+function contourMercY(lat){return (1-Math.log(Math.tan(lat*Math.PI/180)+1/Math.cos(lat*Math.PI/180))/Math.PI)/2;}
+function contourLat(y){return Math.atan(Math.sinh(Math.PI*(1-2*y)))*180/Math.PI;}
+async function contourTile(z,x,y){
+  const n=2**z,key=z+'/'+x+'/'+y;
+  if(contourCache.has(key))return contourCache.get(key);
+  const promise=(async()=>{
+    const url='https://s3.amazonaws.com/elevation-tiles-prod/terrarium/'+key+'.png';
+    const response=await fetch(url,{mode:'cors'});
+    if(!response.ok)throw Error('DEM HTTP '+response.status);
+    const bitmap=await createImageBitmap(await response.blob());
+    contourCtx.clearRect(0,0,256,256);contourCtx.drawImage(bitmap,0,0,256,256);bitmap.close();
+    const pixels=contourCtx.getImageData(0,0,256,256).data;
+    const heights=new Float32Array(256*256);
+    for(let i=0;i<heights.length;i++)heights[i]=pixels[4*i]*256+pixels[4*i+1]+pixels[4*i+2]/256-32768;
+    const features=[];
+    const min=Math.min(...heights),max=Math.max(...heights);
+    const spacing=10;
+    for(let level=Math.ceil(min/spacing)*spacing;level<=max;level+=spacing){
+      const coordinates=[];
+      // Marching squares, sampling every 3 pixels; line segments are
+      // independent GeoJSON segments to avoid false connections.
+      const stride=3;
+      for(let py=0;py<255-stride;py+=stride)for(let px=0;px<255-stride;px+=stride){
+        const h0=heights[py*256+px],h1=heights[py*256+px+stride],
+          h2=heights[(py+stride)*256+px+stride],h3=heights[(py+stride)*256+px];
+        const edges=[];
+        const edge=(ax,ay,ah,bx,by,bh)=>{
+          if((ah<level)!==(bh<level)){
+            const t=(level-ah)/(bh-ah);
+            const xx=px+ax+(bx-ax)*t,yy=py+ay+(by-ay)*t;
+            edges.push([(x+xx/256)/n*360-180,contourLat((y+yy/256)/n)]);
+          }
+        };
+        edge(0,0,h0,stride,0,h1);edge(stride,0,h1,stride,stride,h2);
+        edge(stride,stride,h2,0,stride,h3);edge(0,stride,h3,0,0,h0);
+        if(edges.length===2)coordinates.push(edges);
+        else if(edges.length===4)coordinates.push([edges[0],edges[1]],[edges[2],edges[3]]);
+      }
+      if(coordinates.length)features.push({type:'Feature',
+        properties:{elevation:level},
+        geometry:{type:'MultiLineString',coordinates}});
+    }
+    return features;
+  })().catch(()=>[]);
+  contourCache.set(key,promise);
+  if(contourCache.size>48)contourCache.delete(contourCache.keys().next().value);
+  return promise;
+}
+let contourLastKey='',contourSerial=0;
+async function updateFlyContours(map,lon,lat,wait){
+  const z=13,n=2**z;
+  const x=Math.floor((lon+180)/360*n),y=Math.floor(contourMercY(lat)*n);
+  const key=z+'/'+x+'/'+y;
+  if(key===contourLastKey)return;
+  const serial=++contourSerial;
+  const jobs=[];
+  for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
+    const tx=x+dx,ty=y+dy;
+    if(tx>=0&&tx<n&&ty>=0&&ty<n)jobs.push(contourTile(z,tx,ty));
+  }
+  const apply=async()=>{
+    const features=(await Promise.all(jobs)).flat();
+    if(serial!==contourSerial)return;
+    const source=map.getSource('fly-contours');
+    if(source)source.setData({type:'FeatureCollection',features});
+    contourLastKey=key;
+  };
+  if(wait)await apply();else apply().catch(()=>{});
+}
 async function updateMapLibreFrame(m,gs,g,waitForTiles=false){
   const map=await ensureMapLibre();
-  if(maplibreRouteTrack!==g){updateMapLibreRoute(map,m,g);maplibreRouteTrack=g;}
-  const p=Math.max(0,Math.min(g.n-1,Math.round(gs)));
+  const index=Math.max(0,Math.min(g.n-1,Math.floor(gs)));
   const lon=valueAt(g.lon,gs),lat=valueAt(g.lat,gs);
   if(!Number.isFinite(lon)||!Number.isFinite(lat))return;
+  if(maplibreRouteTrack!==g||maplibreRoutePrivacy!==m.hidden){
+    maplibreRouteTrack=g;maplibreRoutePrivacy=m.hidden;
+  }
+  updateMapLibreRoute(map,m,g,gs);
   const bearing=mapBearing(m,gs)*180/Math.PI;
   map.jumpTo({center:[lon,lat],zoom:m.zoom,pitch:60,bearing});
+  await updateFlyContours(map,lon,lat,waitForTiles);
   if(waitForTiles){
-    await Promise.race([new Promise(resolve=>map.once('render',resolve)),new Promise(resolve=>setTimeout(resolve,1500))]);
+    await Promise.race([new Promise(resolve=>map.once('idle',resolve)),
+      new Promise(resolve=>setTimeout(resolve,1800))]);
+    map.triggerRepaint();
+    await new Promise(resolve=>map.once('render',resolve));
   }else await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
 }
 function drawMapLibreFrame(m,gs,g){
