@@ -1050,6 +1050,35 @@ function drawFrame(srcT) {
     }
     }
   }
+  // Overlay secondary riders in 2D modes. MapLibre draws its own geographic markers.
+  if(L.map&&!L.map.maplibre&&S.riders.length>1){
+    const m=L.map,absolute=g.t0+gs*1000;
+    ctx.save();ctx.beginPath();ctx.rect(m.x,m.y,m.w,m.h);ctx.clip();
+    for(const rider of S.riders.slice(1)){
+      const t=(absolute-rider.track.t0)/1000,rg=rider.track;
+      if(!rg.has.map||t<0||t>rg.n-1)continue;
+      const lon=valueAt(rg.lon,t),lat=valueAt(rg.lat,t);
+      let x,y;
+      if(m.follow){
+        const f=followTiles(m,gs);
+        x=m.x+mercX(lon)*m.world-f.left;y=m.y+mercY(lat)*m.world-f.upper;
+        if(m.rotate){
+          const angle=-mapBearing(m,gs),dx=x-f.anchorX,dy=y-f.anchorY;
+          x=f.anchorX+dx*Math.cos(angle)-dy*Math.sin(angle);
+          y=f.anchorY+dx*Math.sin(angle)+dy*Math.cos(angle);
+        }
+      }else if(m.basemap){
+        x=m.x+mercX(lon)*m.world-m.left;
+        y=m.y+mercY(lat)*m.world-m.upper;
+      }else continue;
+      if(!Number.isFinite(x)||!Number.isFinite(y))continue;
+      ctx.beginPath();ctx.arc(x,y,13,0,Math.PI*2);ctx.fillStyle=rider.color;ctx.fill();
+      ctx.strokeStyle='#fff';ctx.lineWidth=3;ctx.stroke();
+      ctx.fillStyle='#fff';ctx.font='bold 20px Arial';ctx.textAlign='center';ctx.textBaseline='bottom';
+      ctx.shadowColor='#000';ctx.shadowBlur=5;ctx.fillText(rider.name,x,y-18);ctx.shadowBlur=0;
+    }
+    ctx.restore();
+  }
   // North compass: screen-fixed in the top-right of the map.
   // Rotate the arrow with the map, but keep its badge and N label upright.
   if (L.map?.follow && L.map.basemap) {
@@ -1074,7 +1103,7 @@ function drawFrame(srcT) {
     ctx.restore();
   }
   if(o.output==='map'){
-    drawMetricsOverlay(o,g,gs);
+    const telemetry=telemetryAt(gs);drawMetricsOverlay(o,telemetry.g,telemetry.t);
     return;
   }
   // stat tiles
@@ -1087,7 +1116,7 @@ function drawFrame(srcT) {
     if (UNIT[t.k]) { const lw = ctx.measureText(label).width; ctx.font = '26px Arial, Helvetica, sans-serif'; ctx.fillStyle = '#707070'; ctx.fillText(UNIT[t.k], t.x + 24 + lw, t.y + 22); }
     let txt = '–';
     if (t.k === 'time') txt = fmtHM(new Date(g.t0 + gs * 1000));
-    else if (inData) { const v = valueAt(g[t.k], gs); if (!isNaN(v)) txt = (t.k === 'spd'||t.k==='grade') ? v.toFixed(1) : t.k==='relpwr' ? v.toFixed(2) : String(Math.round(v)); }
+    else if (inData) { const v = valueAt(telemetryAt(gs).g[t.k], telemetryAt(gs).t); if (!isNaN(v)) txt = (t.k === 'spd'||t.k==='grade') ? v.toFixed(1) : t.k==='relpwr' ? v.toFixed(2) : String(Math.round(v)); }
     let size = Math.round(t.h * 0.5);
     ctx.font = `bold ${size}px Arial, Helvetica, sans-serif`;
     while (size > 30 && ctx.measureText(txt).width > t.w - 48) { size -= 4; ctx.font = `bold ${size}px Arial, Helvetica, sans-serif`; }
