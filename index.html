@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Strava Clip Maker v2.3.1</title>
+<title>Strava Clip Maker v2.4.0</title>
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <style>
   :root {
@@ -66,7 +66,7 @@
 <body>
 <main>
   <header>
-    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.3.1</span></h1>
+    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.4.0</span></h1>
     <p class="lead">Combine a GoPro video or time-lapse photos with a Garmin GPX or TCX file into a 30-second portrait time-lapse with overlays. Everything runs locally in your browser; no file leaves this computer.</p>
   </header>
 
@@ -120,6 +120,7 @@
         <label><input type="checkbox" id="optHr" checked> Heart rate <small data-for="hr"></small></label>
         <label><input type="checkbox" id="optSpd" checked> Speed <small data-for="spd"></small></label>
         <label><input type="checkbox" id="optPwr" checked> Power <small data-for="pwr"></small></label>
+        <label><input type="checkbox" id="optVam"> VAM (vertical ascent, m/h) <small data-for="vam"></small></label>
         <label><input type="checkbox" id="optTime" checked> Time of day</label>
       </div>
       <p class="muted">Map background uses © OpenStreetMap contributors. In animated mode the map follows the GPS position. Only required tiles are cached for the selected clip. If unavailable, the original plain GPS map is used.</p>
@@ -438,12 +439,12 @@ function parseTrack(text) {
   if (trk.length) {
     for (const p of trk) raw.push({
       t: Date.parse(firstTag(p, 'time')?.textContent), lat: parseFloat(p.getAttribute('lat')), lon: parseFloat(p.getAttribute('lon')),
-      hr: num(firstTag(p, 'hr')), pwr: num(firstTag(p, 'power') || firstTag(p, 'Watts')), spd: num(firstTag(p, 'speed')), dist: NaN });
+      hr: num(firstTag(p, 'hr')), pwr: num(firstTag(p, 'power') || firstTag(p, 'Watts')), spd: num(firstTag(p, 'speed')), ele: num(firstTag(p, 'ele')), dist: NaN });
   } else {
     for (const p of doc.getElementsByTagNameNS('*', 'Trackpoint')) {
       const hb = firstTag(p, 'HeartRateBpm');
       raw.push({ t: Date.parse(firstTag(p, 'Time')?.textContent), lat: num(firstTag(p, 'LatitudeDegrees')), lon: num(firstTag(p, 'LongitudeDegrees')),
-        hr: hb ? num(firstTag(hb, 'Value')) : NaN, pwr: num(firstTag(p, 'Watts')), spd: num(firstTag(p, 'Speed')), dist: num(firstTag(p, 'DistanceMeters')) });
+        hr: hb ? num(firstTag(hb, 'Value')) : NaN, pwr: num(firstTag(p, 'Watts')), spd: num(firstTag(p, 'Speed')), ele: num(firstTag(p, 'AltitudeMeters')), dist: num(firstTag(p, 'DistanceMeters')) });
     }
   }
   raw = raw.filter(p => !isNaN(p.t)).sort((a, b) => a.t - b.t);
@@ -460,10 +461,22 @@ function parseTrack(text) {
     for (let i = 1; i < n; i++) { const dy = (lat[i] - lat[i - 1]) * 111320, dx = (lon[i] - lon[i - 1]) * 111320 * kx; spd[i] = Math.hypot(dx, dy) * 3.6; }
     spd[0] = spd[1] || 0;
   } else if (dist) { spd = new Float64Array(n); for (let i = 1; i < n; i++) spd[i] = Math.max(0, dist[i] - dist[i - 1]) * 3.6; }
+  // VAM: net vertical gain over a trailing 60-second window, converted to m/h.
+  // Negative elevation changes are clamped to zero; elevation noise is smoothed.
+  const elev=ch('ele');
+  let vam=null;
+  if(elev && raw.filter(p=>Number.isFinite(p.ele)).length>10){
+    const filtered=smooth(elev,5);
+    vam=new Float64Array(n);
+    for(let i=0;i<n;i++){
+      const back=Math.max(0,i-60),seconds=i-back;
+      vam[i]=seconds>0?Math.max(0,(filtered[i]-filtered[back])*3600/seconds):0;
+    }
+  }
   return {
     t0, n, lat: gps ? lat : null, lon: gps ? lon : null,
-    hr: ch('hr'), spd: smooth(spd, 2), pwr: smooth(ch('pwr'), 1),
-    has: { map: gps, hr: !!ch('hr'), spd: !!spd, pwr: !!ch('pwr') }
+    hr: ch('hr'), spd: smooth(spd, 2), pwr: smooth(ch('pwr'), 1), vam,
+    has: { map: gps, hr: !!ch('hr'), spd: !!spd, pwr: !!ch('pwr'), vam: !!vam }
   };
 }
 
@@ -560,14 +573,14 @@ async function prepareMapTiles() {
 const opt = () => ({
   output:$('outputMode').value,
   map: ($('outputMode').value==='map'||$('optMap').checked) && !!S.track?.has.map, basemap: $('optBasemap').checked, follow: $('mapMode').value !== 'static', flyover: $('mapMode').value === 'flyover', maplibre: $('mapMode').value === 'maplibre', rotate: $('optRotateMap').checked, smooth: $('optSmoothMap').checked, zoomLevel: +$('mapZoom').value, anchor: +$('mapAnchor').value / 100, hr: $('optHr').checked && !!S.track?.has.hr,
-  spd: $('optSpd').checked && !!S.track?.has.spd, pwr: $('optPwr').checked && !!S.track?.has.pwr,
+  spd: $('optSpd').checked && !!S.track?.has.spd, pwr: $('optPwr').checked && !!S.track?.has.pwr, vam: $('optVam').checked && !!S.track?.has.vam,
   time: $('optTime').checked, flip: $('optFlip').checked, hideEnd: $('optHideEnd').checked,
   flyTheme:$('flyTheme').value, flyAnchor:+$('flyAnchor').value/100, flyPitch:+$('flyPitch').value, flyTerrain:+$('flyTerrain').value, flyHeight:+$('flyHeight').value,
   privacy: Math.max(0, +$('privacy').value || 0)
 });
 function buildLayout() {
   const o = opt(), g = S.track, top = o.output==='map'?0:VIDEO_Y + VIDEO_S + 40, bottom = o.output==='map'?H:1850;
-  const metrics = o.output==='combined'?['hr', 'spd', 'pwr', 'time'].filter(k => o[k]):[];
+  const metrics = o.output==='combined'?['hr', 'spd', 'pwr', 'vam', 'time'].filter(k => o[k]):[];
   const tileH = o.map ? 150 : 220;
   let map = null, tilesY = top;
   if (o.map && g && o.output!=='gopro') {
@@ -799,9 +812,9 @@ function drawMapLibreFrame(m,gs,g){
   ctx.fillStyle='white';ctx.font='16px Arial';ctx.fillText('© OpenStreetMap contributors · OpenFreeMap · AWS Terrain',m.x+14,m.y+m.h-12);
 }
 // ---------- drawing ----------
-const LABEL = { hr: 'HEART RATE', spd: 'SPEED', pwr: 'POWER', time: 'TIME' };
-const UNIT = { hr: 'bpm', spd: 'km/h', pwr: 'W', time: '' };
-const COLOR = { hr: '#FF5A5A', spd: '#3FC1FF', pwr: '#FFC83D', time: '#FFFFFF' };
+const LABEL = { hr: 'HEART RATE', spd: 'SPEED', pwr: 'POWER', vam: 'VAM', time: 'TIME' };
+const UNIT = { hr: 'bpm', spd: 'km/h', pwr: 'W', vam: 'm/h', time: '' };
+const COLOR = { hr: '#FF5A5A', spd: '#3FC1FF', pwr: '#FFC83D', vam: '#9BE36A', time: '#FFFFFF' };
 function valueAt(arr, g) { if (!arr || g < 0 || g > arr.length - 1) return NaN; const i = Math.floor(g), f = g - i; return i + 1 < arr.length ? arr[i] + (arr[i + 1] - arr[i]) * f : arr[i]; }
 function roundRect(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x, y, w, h, r) : ctx.rect(x, y, w, h); }
 // Flyover uses a perspective-projected offscreen canvas. It is rendered by the
@@ -855,7 +868,7 @@ function drawFlyover(m,f,gs,g,gi,inData) {
 // Compact readable HUD for full-frame video or map-only exports.
 // Uses the same telemetry selections and timestamps as the combined layout.
 function drawMetricsOverlay(o,g,gs){
-  const keys=['hr','spd','pwr','time'].filter(k=>o[k]&&(k==='time'||g.has[k]));
+  const keys=['hr','spd','pwr','vam','time'].filter(k=>o[k]&&(k==='time'||g.has[k]));
   if(!keys.length)return;
   const gap=12,margin=32,columns=keys.length;
   const width=(W-2*margin-gap*(columns-1))/columns;
@@ -1080,12 +1093,12 @@ function updateFileInfo() {
   }
   const g = S.track;
   if (g) {
-    const have = Object.entries({ 'GPS': g.has.map, 'heart rate': g.has.hr, 'speed': g.has.spd, 'power': g.has.pwr }).filter(e => e[1]).map(e => e[0]);
+    const have = Object.entries({ 'GPS': g.has.map, 'heart rate': g.has.hr, 'speed': g.has.spd, 'power': g.has.pwr, 'VAM': g.has.vam }).filter(e => e[1]).map(e => e[0]);
     lines.push(`Activity: ${new Date(g.t0).toLocaleString('sv-SE')}, ${fmtDur(g.n - 1)}; data: ${have.join(', ') || 'none'}`);
   }
   $('fileInfo').textContent = lines.join('\n') || 'No files loaded.';
-  for (const k of ['map', 'hr', 'spd', 'pwr']) {
-    const box = $('opt' + { map: 'Map', hr: 'Hr', spd: 'Spd', pwr: 'Pwr' }[k]), missing = g && !g.has[k];
+  for (const k of ['map', 'hr', 'spd', 'pwr', 'vam']) {
+    const box = $('opt' + { map: 'Map', hr: 'Hr', spd: 'Spd', pwr: 'Pwr', vam: 'Vam' }[k]), missing = g && !g.has[k];
     box.disabled = !!missing; box.closest('label').classList.toggle('off', !!missing);
     document.querySelector(`small[data-for="${k}"]`).textContent = missing ? '(not in file)' : '';
   }
@@ -1351,7 +1364,7 @@ $('outputMode').addEventListener('change',()=>{
   refresh();
 });
 $('mapMode').addEventListener('change',()=>{ if($('mapMode').value==='maplibre')$('mapZoom').value='17'; });
-for (const id of ['outputMode','flyTheme','flyAnchor','flyPitch','flyTerrain','flyHeight','offset', 'optBasemap', 'mapMode', 'optRotateMap', 'optSmoothMap', 'mapZoom', 'mapAnchor', 'optMap', 'optHr', 'optSpd', 'optPwr', 'optTime', 'optFlip', 'optHideEnd', 'privacy']) $(id).addEventListener('input', refresh);
+for (const id of ['outputMode','flyTheme','flyAnchor','flyPitch','flyTerrain','flyHeight','offset', 'optBasemap', 'mapMode', 'optRotateMap', 'optSmoothMap', 'mapZoom', 'mapAnchor', 'optMap', 'optHr', 'optSpd', 'optPwr', 'optVam', 'optTime', 'optFlip', 'optHideEnd', 'privacy']) $(id).addEventListener('input', refresh);
 for(const [id,unit] of [['flyAnchor','%'],['flyPitch','°'],['flyTerrain','×'],['flyHeight',' px']]){
   $(id).addEventListener('input',()=>{$(id+'Value').textContent=$(id).value+unit;});
 }
