@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Strava Clip Maker v2.5.0</title>
+<title>Strava Clip Maker v2.6.0</title>
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <style>
   :root {
@@ -66,7 +66,7 @@
 <body>
 <main>
   <header>
-    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.5.0</span></h1>
+    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.6.0</span></h1>
     <p class="lead">Combine a GoPro video or time-lapse photos with a Garmin GPX or TCX file into a 30-second portrait time-lapse with overlays. Everything runs locally in your browser; no file leaves this computer.</p>
   </header>
 
@@ -121,6 +121,7 @@
         <label><input type="checkbox" id="optSpd" checked> Speed <small data-for="spd"></small></label>
         <label><input type="checkbox" id="optPwr" checked> Power <small data-for="pwr"></small></label>
         <label><input type="checkbox" id="optVam"> VAM (vertical ascent, m/h) <small data-for="vam"></small></label>
+        <label><input type="checkbox" id="optRelPwr"> Relative power (W/kg) — calculated from VAM / 367 <small data-for="relpwr"></small></label>
         <label><input type="checkbox" id="optGrade"> Gradient / lutning (%) <small data-for="grade"></small></label>
         <label><input type="checkbox" id="optTime" checked> Time of day</label>
       </div>
@@ -495,8 +496,8 @@ function parseTrack(text) {
   }
   return {
     t0, n, lat: gps ? lat : null, lon: gps ? lon : null,
-    hr: ch('hr'), spd: smooth(spd, 2), pwr: smooth(ch('pwr'), 1), vam, grade,
-    has: { map: gps, hr: !!ch('hr'), spd: !!spd, pwr: !!ch('pwr'), vam: !!vam, grade: !!grade }
+    hr: ch('hr'), spd: smooth(spd, 2), pwr: smooth(ch('pwr'), 1), vam, relpwr: vam ? Float64Array.from(vam,v=>v/367) : null, grade,
+    has: { map: gps, hr: !!ch('hr'), spd: !!spd, pwr: !!ch('pwr'), vam: !!vam, relpwr: !!vam, grade: !!grade }
   };
 }
 
@@ -593,14 +594,14 @@ async function prepareMapTiles() {
 const opt = () => ({
   output:$('outputMode').value,
   map: ($('outputMode').value==='map'||$('optMap').checked) && !!S.track?.has.map, basemap: $('optBasemap').checked, follow: $('mapMode').value !== 'static', flyover: $('mapMode').value === 'flyover', maplibre: $('mapMode').value === 'maplibre', rotate: $('optRotateMap').checked, smooth: $('optSmoothMap').checked, zoomLevel: +$('mapZoom').value, anchor: +$('mapAnchor').value / 100, hr: $('optHr').checked && !!S.track?.has.hr,
-  spd: $('optSpd').checked && !!S.track?.has.spd, pwr: $('optPwr').checked && !!S.track?.has.pwr, vam: $('optVam').checked && !!S.track?.has.vam, grade: $('optGrade').checked && !!S.track?.has.grade,
+  spd: $('optSpd').checked && !!S.track?.has.spd, pwr: $('optPwr').checked && !!S.track?.has.pwr, vam: $('optVam').checked && !!S.track?.has.vam, relpwr: $('optRelPwr').checked && !!S.track?.has.relpwr, grade: $('optGrade').checked && !!S.track?.has.grade,
   time: $('optTime').checked, flip: $('optFlip').checked, hideEnd: $('optHideEnd').checked,
   flyTheme:$('flyTheme').value, flyAnchor:+$('flyAnchor').value/100, flyPitch:+$('flyPitch').value, flyTerrain:+$('flyTerrain').value, flyHeight:+$('flyHeight').value,
   privacy: Math.max(0, +$('privacy').value || 0)
 });
 function buildLayout() {
   const o = opt(), g = S.track, top = o.output==='map'?0:VIDEO_Y + VIDEO_S + 40, bottom = o.output==='map'?H:1850;
-  const metrics = o.output==='combined'?['hr', 'spd', 'pwr', 'vam', 'grade', 'time'].filter(k => o[k]):[];
+  const metrics = o.output==='combined'?['hr', 'spd', 'pwr', 'vam', 'relpwr', 'grade', 'time'].filter(k => o[k]):[];
   const tileH = o.map ? 150 : 220;
   let map = null, tilesY = top;
   if (o.map && g && o.output!=='gopro') {
@@ -832,9 +833,9 @@ function drawMapLibreFrame(m,gs,g){
   ctx.fillStyle='white';ctx.font='16px Arial';ctx.fillText('© OpenStreetMap contributors · OpenFreeMap · AWS Terrain',m.x+14,m.y+m.h-12);
 }
 // ---------- drawing ----------
-const LABEL = { hr: 'HEART RATE', spd: 'SPEED', pwr: 'POWER', vam: 'VAM', grade: 'GRADIENT', time: 'TIME' };
-const UNIT = { hr: 'bpm', spd: 'km/h', pwr: 'W', vam: 'm/h', grade: '%', time: '' };
-const COLOR = { hr: '#FF5A5A', spd: '#3FC1FF', pwr: '#FFC83D', vam: '#9BE36A', grade: '#C6A0FF', time: '#FFFFFF' };
+const LABEL = { hr: 'HEART RATE', spd: 'SPEED', pwr: 'POWER', vam: 'VAM', relpwr: 'POWER FROM VAM', grade: 'GRADIENT', time: 'TIME' };
+const UNIT = { hr: 'bpm', spd: 'km/h', pwr: 'W', vam: 'm/h', relpwr: 'W/kg · calculated from VAM', grade: '%', time: '' };
+const COLOR = { hr: '#FF5A5A', spd: '#3FC1FF', pwr: '#FFC83D', vam: '#9BE36A', relpwr: '#64E4B7', grade: '#C6A0FF', time: '#FFFFFF' };
 function valueAt(arr, g) { if (!arr || g < 0 || g > arr.length - 1) return NaN; const i = Math.floor(g), f = g - i; return i + 1 < arr.length ? arr[i] + (arr[i + 1] - arr[i]) * f : arr[i]; }
 function roundRect(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x, y, w, h, r) : ctx.rect(x, y, w, h); }
 // Flyover uses a perspective-projected offscreen canvas. It is rendered by the
@@ -888,7 +889,7 @@ function drawFlyover(m,f,gs,g,gi,inData) {
 // Compact readable HUD for full-frame video or map-only exports.
 // Uses the same telemetry selections and timestamps as the combined layout.
 function drawMetricsOverlay(o,g,gs){
-  const keys=['hr','spd','pwr','vam','grade','time'].filter(k=>o[k]&&(k==='time'||g.has[k]));
+  const keys=['hr','spd','pwr','vam','relpwr','grade','time'].filter(k=>o[k]&&(k==='time'||g.has[k]));
   if(!keys.length)return;
   const gap=12,margin=32,columns=keys.length;
   const width=(W-2*margin-gap*(columns-1))/columns;
@@ -905,7 +906,7 @@ function drawMetricsOverlay(o,g,gs){
     if(k==='time')value=fmtHM(new Date(g.t0+gs*1000));
     else if(gs>=0&&gs<=g.n-1){
       const v=valueAt(g[k],gs);
-      if(Number.isFinite(v))value=(k==='spd'||k==='grade')?v.toFixed(1):String(Math.round(v));
+      if(Number.isFinite(v))value=(k==='spd'||k==='grade')?v.toFixed(1):k==='relpwr'?v.toFixed(2):String(Math.round(v));
     }
     let fontSize=49;
     do{ctx.font='bold '+fontSize+'px Arial, sans-serif';fontSize-=2;}
@@ -1045,7 +1046,7 @@ function drawFrame(srcT) {
     if (UNIT[t.k]) { const lw = ctx.measureText(label).width; ctx.font = '26px Arial, Helvetica, sans-serif'; ctx.fillStyle = '#707070'; ctx.fillText(UNIT[t.k], t.x + 24 + lw, t.y + 22); }
     let txt = '–';
     if (t.k === 'time') txt = fmtHM(new Date(g.t0 + gs * 1000));
-    else if (inData) { const v = valueAt(g[t.k], gs); if (!isNaN(v)) txt = t.k === 'spd' ? v.toFixed(1) : String(Math.round(v)); }
+    else if (inData) { const v = valueAt(g[t.k], gs); if (!isNaN(v)) txt = (t.k === 'spd'||t.k==='grade') ? v.toFixed(1) : t.k==='relpwr' ? v.toFixed(2) : String(Math.round(v)); }
     let size = Math.round(t.h * 0.5);
     ctx.font = `bold ${size}px Arial, Helvetica, sans-serif`;
     while (size > 30 && ctx.measureText(txt).width > t.w - 48) { size -= 4; ctx.font = `bold ${size}px Arial, Helvetica, sans-serif`; }
@@ -1113,12 +1114,12 @@ function updateFileInfo() {
   }
   const g = S.track;
   if (g) {
-    const have = Object.entries({ 'GPS': g.has.map, 'heart rate': g.has.hr, 'speed': g.has.spd, 'power': g.has.pwr, 'VAM': g.has.vam, 'gradient': g.has.grade }).filter(e => e[1]).map(e => e[0]);
+    const have = Object.entries({ 'GPS': g.has.map, 'heart rate': g.has.hr, 'speed': g.has.spd, 'power': g.has.pwr, 'VAM': g.has.vam, 'relative power from VAM': g.has.relpwr, 'gradient': g.has.grade }).filter(e => e[1]).map(e => e[0]);
     lines.push(`Activity: ${new Date(g.t0).toLocaleString('sv-SE')}, ${fmtDur(g.n - 1)}; data: ${have.join(', ') || 'none'}`);
   }
   $('fileInfo').textContent = lines.join('\n') || 'No files loaded.';
-  for (const k of ['map', 'hr', 'spd', 'pwr', 'vam', 'grade']) {
-    const box = $('opt' + { map: 'Map', hr: 'Hr', spd: 'Spd', pwr: 'Pwr', vam: 'Vam', grade: 'Grade' }[k]), missing = g && !g.has[k];
+  for (const k of ['map', 'hr', 'spd', 'pwr', 'vam', 'relpwr', 'grade']) {
+    const box = $('opt' + { map: 'Map', hr: 'Hr', spd: 'Spd', pwr: 'Pwr', vam: 'Vam', relpwr: 'RelPwr', grade: 'Grade' }[k]), missing = g && !g.has[k];
     box.disabled = !!missing; box.closest('label').classList.toggle('off', !!missing);
     document.querySelector(`small[data-for="${k}"]`).textContent = missing ? '(not in file)' : '';
   }
@@ -1384,7 +1385,7 @@ $('outputMode').addEventListener('change',()=>{
   refresh();
 });
 $('mapMode').addEventListener('change',()=>{ if($('mapMode').value==='maplibre')$('mapZoom').value='17'; });
-for (const id of ['outputMode','flyTheme','flyAnchor','flyPitch','flyTerrain','flyHeight','offset', 'optBasemap', 'mapMode', 'optRotateMap', 'optSmoothMap', 'mapZoom', 'mapAnchor', 'optMap', 'optHr', 'optSpd', 'optPwr', 'optVam', 'optGrade', 'optTime', 'optFlip', 'optHideEnd', 'privacy']) $(id).addEventListener('input', refresh);
+for (const id of ['outputMode','flyTheme','flyAnchor','flyPitch','flyTerrain','flyHeight','offset', 'optBasemap', 'mapMode', 'optRotateMap', 'optSmoothMap', 'mapZoom', 'mapAnchor', 'optMap', 'optHr', 'optSpd', 'optPwr', 'optVam', 'optRelPwr', 'optGrade', 'optTime', 'optFlip', 'optHideEnd', 'privacy']) $(id).addEventListener('input', refresh);
 for(const [id,unit] of [['flyAnchor','%'],['flyPitch','°'],['flyTerrain','×'],['flyHeight',' px']]){
   $(id).addEventListener('input',()=>{$(id+'Value').textContent=$(id).value+unit;});
 }
