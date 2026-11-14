@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Strava Clip Maker v2.7.2</title>
+<title>Strava Clip Maker v2.8.0</title>
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <style>
   :root {
@@ -66,7 +66,7 @@
 <body>
 <main>
   <header>
-    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.7.2</span></h1>
+    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.8.0</span></h1>
     <p class="lead">Combine a GoPro video or time-lapse photos with a Garmin GPX or TCX file into a 30-second portrait time-lapse with overlays. Everything runs locally in your browser; no file leaves this computer.</p>
   </header>
 
@@ -146,6 +146,11 @@
         <label>Elapsed time — start (hh:mm:ss)<input id="elapsedStart" type="text" placeholder="00:00:00"></label>
         <label>Elapsed time — end (hh:mm:ss)<input id="elapsedEnd" type="text" placeholder="00:05:00"></label>
       </div>
+      <div class="grid2" style="margin-top:12px">
+        <label>Distance remaining — from (km)<input id="remainingFrom" type="number" min="0" step="0.1" placeholder="150"></label>
+        <label>Distance remaining — to (km)<input id="remainingTo" type="number" min="0" step="0.1" placeholder="120"></label>
+      </div>
+      <p class="muted" id="distanceInfo">Select e.g. 150 → 120 km remaining to zoom the exported video to that section. Distance is calculated along the primary cyclist's GPS track; the file endpoint is treated as the finish. Leave blank to use elapsed time.</p>
       <p class="muted" id="elapsedInfo">Leave both elapsed-time fields empty to use the existing clip length and trimming controls. Elapsed interval may be longer than 600 seconds; the exported film duration is set by Clip length (maximum 600 s).</p>
     </section>
 
@@ -513,7 +518,21 @@ function parseTrack(text,synthetic=null) {
       vam[i]=seconds>0?Math.max(0,(filtered[i]-filtered[back])*3600/seconds):0;
     }
   }
+  // Distance remaining is based on GPS path length, not speed or assumed duration.
+  // Use the primary cyclist's complete file as the finish reference.
+  const distanceMeters=gps?new Float64Array(n):null;
+  if(distanceMeters){
+    const rad=Math.PI/180;
+    for(let i=1;i<n;i++){
+      const mean=(lat[i]+lat[i-1])*rad/2;
+      const dx=(lon[i]-lon[i-1])*rad*6371000*Math.cos(mean);
+      const dy=(lat[i]-lat[i-1])*rad*6371000;
+      const step=Math.hypot(dx,dy);
+      distanceMeters[i]=distanceMeters[i-1]+(Number.isFinite(step)?step:0);
+    }
+  }
   return {
+    distanceMeters,
     t0, n, estimated:!measured, lat: gps ? lat : null, lon: gps ? lon : null,
     hr: ch('hr'), spd: smooth(spd, 2), pwr: smooth(ch('pwr'), 1), vam, relpwr: vam ? Float64Array.from(vam,v=>v/367) : null, grade,
     has: { map: gps, hr: !!ch('hr'), spd: !!spd, pwr: !!ch('pwr'), vam: !!vam, relpwr: !!vam, grade: !!grade }
@@ -1235,6 +1254,7 @@ function updateFileInfo() {
   }
   $('fileInfo').textContent = lines.join('\n') || 'No files loaded.';
   updateRiderList();
+  updateElapsedInfo();
   for (const k of ['map', 'hr', 'spd', 'pwr', 'vam', 'relpwr', 'grade']) {
     const box = $('opt' + { map: 'Map', hr: 'Hr', spd: 'Spd', pwr: 'Pwr', vam: 'Vam', relpwr: 'RelPwr', grade: 'Grade' }[k]), missing = g && !g.has[k];
     box.disabled = !!missing; box.closest('label').classList.toggle('off', !!missing);
@@ -1334,9 +1354,39 @@ function elapsedSeconds(input){
   if(nums.slice(1).some(x=>x>=60))throw Error('Minutes and seconds must be below 60.');
   return parts.length===3?nums[0]*3600+nums[1]*60+nums[2]:nums[0]*60+nums[1];
 }
+function timeAtDistance(g,targetMeters){
+  const d=g.distanceMeters;
+  if(!d||targetMeters<0||targetMeters>d[d.length-1])throw Error('Selected distance is outside the GPS track.');
+  let lo=0,hi=d.length-1;
+  while(lo<hi){const mid=(lo+hi)>>1;if(d[mid]<targetMeters)lo=mid+1;else hi=mid;}
+  if(lo===0)return 0;
+  const span=d[lo]-d[lo-1];
+  return lo-1+(span>0?(targetMeters-d[lo-1])/span:0);
+}
+function remainingDistanceWindow(){
+  const fromText=$('remainingFrom').value.trim(),toText=$('remainingTo').value.trim();
+  if(!fromText&&!toText)return null;
+  if(!fromText||!toText)throw Error('Enter both distance-remaining values (e.g. 150 and 120 km).');
+  const from=Number(fromText),to=Number(toText),g=S.track;
+  if(!g?.distanceMeters)throw Error('Distance remaining requires a primary GPS track.');
+  const total=g.distanceMeters[g.distanceMeters.length-1]/1000;
+  if(!Number.isFinite(from)||!Number.isFinite(to)||from<=to||to<0||from>total)
+    throw Error('Distance remaining must decrease and stay within 0–'+total.toFixed(1)+' km.');
+  const start=timeAtDistance(g,(total-from)*1000),end=timeAtDistance(g,(total-to)*1000);
+  if(end-start<1)throw Error('The selected section is shorter than one second.');
+  return {start,end,from,to,total};
+}
 function exportWindow(){
   const start=elapsedSeconds($('elapsedStart').value),end=elapsedSeconds($('elapsedEnd').value);
   const len=Math.min(600,Math.max(3,+$('clipLen').value||29.5));
+  const distance=remainingDistanceWindow();
+  if(distance){
+    const offset=mapOnly()&&!hasMedia()?0:(+$('offset').value||0);
+    const t0=distance.start-offset,t1=distance.end-offset;
+    if(!mapOnly()&&(!hasMedia()||t0<0||t1>S.total))
+      throw Error('Selected distance interval falls outside the GoPro media. Check sync offset or use Map only.');
+    return {t0,t1,len,distance:true};
+  }
   if(start!==null||end!==null){
     if(!S.track)throw Error('Elapsed-time selection requires a GPX/TCX activity.');
     if(start===null||end===null)throw Error('Enter both elapsed start and end times.');
@@ -1358,10 +1408,14 @@ function updateElapsedInfo(){
   try{
     const a=elapsedSeconds($('elapsedStart').value),b=elapsedSeconds($('elapsedEnd').value);
     const film=Math.min(600,Math.max(3,+$('clipLen').value||29.5));
+    const distance=remainingDistanceWindow();
+    $('distanceInfo').textContent=distance?
+      distance.from.toFixed(1)+' → '+distance.to.toFixed(1)+' km remaining · '+fmtDur(distance.end-distance.start)+' of activity → '+fmtDur(film)+' video ('+((distance.end-distance.start)/film).toFixed(1)+'×). Distance selection takes priority over elapsed-time fields.':
+      'Enter e.g. 150 → 120 km remaining. The endpoint of the primary GPS file is treated as the finish.';
     $('elapsedInfo').textContent=a===null&&b===null?'Leave elapsed fields empty to use normal trimming. Maximum video duration: 600 s.':
       a!==null&&b!==null&&b>a?'Activity segment: '+fmtDur(b-a)+' → video: '+fmtDur(film)+' ('+((b-a)/film).toFixed(1)+'× playback speed).':
       'Enter both elapsed start and end times.';
-  }catch(e){$('elapsedInfo').textContent=e.message;}
+  }catch(e){$('elapsedInfo').textContent=e.message;$('distanceInfo').textContent=e.message;}
 }
 async function render() {
   if (typeof VideoEncoder === 'undefined') { setStatus('This browser cannot encode video (WebCodecs missing). Use a current Edge or Chrome.', 'err'); return; }
@@ -1530,7 +1584,7 @@ $('folderIn').addEventListener('change', e => { if (e.target.files.length) useFo
 $('trackIn').addEventListener('change', async e => {if(e.target.files.length)await useTrackFiles([...e.target.files]);e.target.value='';});
 $('telemetryRider').addEventListener('change',refresh);
 $('scrub').addEventListener('input', e => preview(+e.target.value));
-for(const id of ['elapsedStart','elapsedEnd','clipLen'])$(id).addEventListener('input',updateElapsedInfo);
+for(const id of ['elapsedStart','elapsedEnd','clipLen','remainingFrom','remainingTo'])$(id).addEventListener('input',updateElapsedInfo);
 for (const b of document.querySelectorAll('.offset button[data-d]')) b.addEventListener('click', () => { $('offset').value = ((+$('offset').value || 0) + +b.dataset.d).toFixed(1); refresh(); });
 $('outputMode').addEventListener('change',()=>{
   if(mapOnly()){$('mapMode').value='maplibre';$('mapZoom').value='17';}
