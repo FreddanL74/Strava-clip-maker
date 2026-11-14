@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Strava Clip Maker v2.7.0</title>
+<title>Strava Clip Maker v2.7.1</title>
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <style>
   :root {
@@ -66,7 +66,7 @@
 <body>
 <main>
   <header>
-    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.7.0</span></h1>
+    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.7.1</span></h1>
     <p class="lead">Combine a GoPro video or time-lapse photos with a Garmin GPX or TCX file into a 30-second portrait time-lapse with overlays. Everything runs locally in your browser; no file leaves this computer.</p>
   </header>
 
@@ -1465,8 +1465,10 @@ async function useTrackFiles(files){
       const timed=[...nodes].some(p=>firstTag(p,pts.length?'time':'Time')?.textContent?.trim());
       let synthetic=null;
       if(!timed){
-        const start=Date.parse($('untimedStart').value),duration=elapsedSeconds($('untimedDuration').value);
-        if(!Number.isFinite(start)||!duration)throw Error(f.name+': enter start date/time and estimated duration.');
+        const inferredStart= S.riders[0]?.track?.t0 ?? additions[0]?.track?.t0;
+        const start=$('untimedStart').value ? Date.parse($('untimedStart').value) : inferredStart;
+        const duration=elapsedSeconds($('untimedDuration').value);
+        if(!Number.isFinite(start)||!duration)throw Error(f.name+': this GPX has no timestamps. Enter a start date/time and estimated duration (for example 04:00:00).');
         synthetic={start,duration};
       }
       const track=parseTrack(xml,synthetic);
@@ -1499,7 +1501,7 @@ $('autoSync').addEventListener('click', autoSync);
 $('renderBtn').addEventListener('click', render);
 $('autoSync').disabled = true;
 // test hook: window.__clip exposes state for automated checks
-window.__clip = S; window.__api = { exifTime, useMediaFiles, useFolder, useTrack, autoSync, render };
+window.__clip = S; window.__api = { exifTime, useMediaFiles, useFolder, useTrackFiles, autoSync, render };
 </script>
 </body>
 </html>
