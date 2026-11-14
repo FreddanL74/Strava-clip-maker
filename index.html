@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Strava Clip Maker v2.6.0</title>
+<title>Strava Clip Maker v2.7.0</title>
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <style>
   :root {
@@ -66,7 +66,7 @@
 <body>
 <main>
   <header>
-    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.6.0</span></h1>
+    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.7.0</span></h1>
     <p class="lead">Combine a GoPro video or time-lapse photos with a Garmin GPX or TCX file into a 30-second portrait time-lapse with overlays. Everything runs locally in your browser; no file leaves this computer.</p>
   </header>
 
@@ -80,8 +80,13 @@
         <input type="file" id="folderIn" webkitdirectory multiple>
       </label>
       <label class="field">Activity file (GPX or TCX)
-        <input type="file" id="trackIn" accept=".gpx,.tcx,application/gpx+xml,application/xml">
+        <input type="file" id="trackIn" accept=".gpx,.tcx,application/gpx+xml,application/xml" multiple>
       </label>
+      <label>Untimed GPX start (local) <input type="datetime-local" id="untimedStart"></label>
+      <label>Untimed GPX estimated duration (hh:mm:ss) <input id="untimedDuration" value="04:00:00"></label>
+      <small class="muted">For files without timestamps, positions are estimated by distance along the route, not measured.</small>
+      <div class="info" id="riderList">No cyclists loaded.</div>
+      <label>Telemetry cyclist <select id="telemetryRider"></select></label>
       <p class="info" id="fileInfo">No files loaded.</p>
     </section>
 
@@ -182,7 +187,7 @@ import { Muxer, ArrayBufferTarget } from 'https://cdn.jsdelivr.net/npm/mp4-muxer
 const $ = id => document.getElementById(id);
 const W = 1080, H = 1920, VIDEO_Y = 70, VIDEO_S = 1080, FPS = 30;
 const canvas = $('stage'), ctx = canvas.getContext('2d');
-const S = { kind: 'video', clips: [], photos: [], total: 0, track: null, camStart: null, layout: null, busy: false, scan: null, picked: null, cur: null };
+const S = { kind: 'video', clips: [], photos: [], total: 0, track: null, riders: [], camStart: null, layout: null, busy: false, scan: null, picked: null, cur: null };
 
 // ---------- small helpers ----------
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -433,7 +438,7 @@ function smooth(a, half) {
   for (let i = 0; i < a.length; i++) { let s = 0, c = 0; for (let k = Math.max(0, i - half); k <= Math.min(a.length - 1, i + half); k++) { s += a[k]; c++; } o[i] = s / c; }
   return o;
 }
-function parseTrack(text) {
+function parseTrack(text,synthetic=null) {
   const doc = new DOMParser().parseFromString(text, 'application/xml');
   if (doc.getElementsByTagName('parsererror').length) throw new Error('Could not read the activity file as XML');
   let raw = [];
@@ -449,8 +454,22 @@ function parseTrack(text) {
         hr: hb ? num(firstTag(hb, 'Value')) : NaN, pwr: num(firstTag(p, 'Watts')), spd: num(firstTag(p, 'Speed')), ele: num(firstTag(p, 'AltitudeMeters')), dist: num(firstTag(p, 'DistanceMeters')) });
     }
   }
-  raw = raw.filter(p => !isNaN(p.t)).sort((a, b) => a.t - b.t);
-  if (raw.length < 2) throw new Error('No timed track points found in the activity file');
+  const measured=raw.filter(p=>Number.isFinite(p.t)).length>=2;
+  if(!measured){
+    if(!synthetic||!Number.isFinite(synthetic.start)||!Number.isFinite(synthetic.duration)||synthetic.duration<=0)
+      throw Error('Untimed GPX requires a start date/time and estimated duration.');
+    raw=raw.filter(p=>Number.isFinite(p.lat)&&Number.isFinite(p.lon));
+    if(raw.length<2)throw Error('No GPS coordinates in activity.');
+    const dist=new Float64Array(raw.length),rad=Math.PI/180;
+    for(let i=1;i<raw.length;i++){
+      const a=raw[i-1],b=raw[i],ml=(a.lat+b.lat)*rad/2;
+      dist[i]=dist[i-1]+6371000*rad*Math.hypot((b.lon-a.lon)*Math.cos(ml),b.lat-a.lat);
+    }
+    const total=dist[dist.length-1];
+    if(total<1)throw Error('Untimed route has no distance.');
+    for(let i=0;i<raw.length;i++)raw[i].t=synthetic.start+synthetic.duration*1000*dist[i]/total;
+  }else raw=raw.filter(p=>Number.isFinite(p.t)).sort((a,b)=>a.t-b.t);
+  if(raw.length<2)throw Error('No usable track points found.');
   const t0 = raw[0].t, n = Math.floor((raw[raw.length - 1].t - t0) / 1000) + 1;
   const times = raw.map(p => p.t), ch = key => resample(times, raw.map(p => p[key]), t0, n);
   const lat = ch('lat'), lon = ch('lon');
@@ -495,7 +514,7 @@ function parseTrack(text) {
     }
   }
   return {
-    t0, n, lat: gps ? lat : null, lon: gps ? lon : null,
+    t0, n, estimated:!measured, lat: gps ? lat : null, lon: gps ? lon : null,
     hr: ch('hr'), spd: smooth(spd, 2), pwr: smooth(ch('pwr'), 1), vam, relpwr: vam ? Float64Array.from(vam,v=>v/367) : null, grade,
     has: { map: gps, hr: !!ch('hr'), spd: !!spd, pwr: !!ch('pwr'), vam: !!vam, relpwr: !!vam, grade: !!grade }
   };
@@ -735,6 +754,23 @@ function smoothedFlyPosition(g,gs,enabled){
   return total?[lon/total,lat/total]:[valueAt(g.lon,gs),valueAt(g.lat,gs)];
 }
 function flyLine(coords){return {type:'Feature',geometry:{type:'LineString',coordinates:coords},properties:{}};}
+function updateOtherRiders(map,seconds){
+  if(S.riders.length<2)return;
+  const absolute=S.track.t0+seconds*1000,features=[];
+  for(const r of S.riders.slice(1)){
+    const g=r.track,t=(absolute-g.t0)/1000;
+    if(!g.has.map||t<0||t>g.n-1)continue;
+    const pos=[valueAt(g.lon,t),valueAt(g.lat,t)];
+    if(pos.every(Number.isFinite))features.push({type:'Feature',geometry:{type:'Point',coordinates:pos},properties:{name:r.name,color:r.color}});
+  }
+  const data={type:'FeatureCollection',features};
+  if(map.getSource('other-riders'))map.getSource('other-riders').setData(data);
+  else{
+    map.addSource('other-riders',{type:'geojson',data});
+    map.addLayer({id:'other-riders-dots',type:'circle',source:'other-riders',paint:{'circle-radius':13,'circle-color':['get','color'],'circle-stroke-color':'#fff','circle-stroke-width':3}});
+    map.addLayer({id:'other-riders-names',type:'symbol',source:'other-riders',layout:{'text-field':['get','name'],'text-size':17,'text-offset':[0,1.8],'text-anchor':'top','text-allow-overlap':true},paint:{'text-color':'#fff','text-halo-color':'#111','text-halo-width':2}});
+  }
+}
 function updateMapLibreRoute(map,m,g,gs){
   const current=Math.max(0,Math.min(g.n-1,Math.floor(gs)));
   const recent=Math.max(0,current-90);
@@ -802,6 +838,7 @@ async function updateMapLibreFrame(m,gs,g,waitForTiles=false){
     maplibreRouteTrack=g;maplibreRoutePrivacy=m.hidden;
   }
   updateMapLibreRoute(map,m,g,gs);
+  updateOtherRiders(map,gs);
   // Geographic heading is independent of whether the camera rotates.
   // A map-aligned icon otherwise always points to geographic north.
   if(map.getLayer('fly-rider-symbol')){
@@ -916,6 +953,10 @@ function drawMetricsOverlay(o,g,gs){
   }
   ctx.restore();
 }
+function telemetryAt(seconds){
+  const r=S.riders[Number($('telemetryRider').value)||0];
+  return r?{g:r.track,t:(S.track.t0+seconds*1000-r.track.t0)/1000}:{g:S.track,t:seconds};
+}
 function drawFrame(srcT) {
   const L = S.layout, o = L.o, g = S.track, off = +$('offset').value || 0, gs = srcT + off;
   ctx.fillStyle = '#111111'; ctx.fillRect(0, 0, W, H);
@@ -928,7 +969,7 @@ function drawFrame(srcT) {
     ctx.restore();
   }
   if(o.output==='gopro'){
-    if(g)drawMetricsOverlay(o,g,gs);
+    if(g){const v=telemetryAt(gs);drawMetricsOverlay(o,v.g,v.t);}
     return;
   }
   if (!g) return;
@@ -1118,6 +1159,7 @@ function updateFileInfo() {
     lines.push(`Activity: ${new Date(g.t0).toLocaleString('sv-SE')}, ${fmtDur(g.n - 1)}; data: ${have.join(', ') || 'none'}`);
   }
   $('fileInfo').textContent = lines.join('\n') || 'No files loaded.';
+  updateRiderList();
   for (const k of ['map', 'hr', 'spd', 'pwr', 'vam', 'relpwr', 'grade']) {
     const box = $('opt' + { map: 'Map', hr: 'Hr', spd: 'Spd', pwr: 'Pwr', vam: 'Vam', relpwr: 'RelPwr', grade: 'Grade' }[k]), missing = g && !g.has[k];
     box.disabled = !!missing; box.closest('label').classList.toggle('off', !!missing);
@@ -1366,16 +1408,50 @@ async function useFolder(files) {
     await applyScan(); mediaLoaded();
   } catch (err) { setStatus(err.message, 'err'); }
 }
-async function useTrack(text) {
-  try {
-    S.track = parseTrack(text);
-    if (S.scan && !S.picked) { setStatus('Picking the matching photos or video…'); await applyScan(); mediaLoaded(); return; }
-    defaultOffset(); updateFileInfo(); setStatus(''); refresh();
-  } catch (err) { if (!S.track) updateFileInfo(); setStatus(err.message, 'err'); }
+const riderColors=['#FF4545','#39C9FF','#FFD24A','#B78BFF','#6BE68B','#FF91C1'];
+function updateRiderList(){
+  const list=$('riderList'),sel=$('telemetryRider'),old=sel.value;
+  list.replaceChildren();sel.replaceChildren();
+  S.riders.forEach((r,i)=>{
+    const row=document.createElement('div'),name=document.createElement('input');
+    name.value=r.name;name.style.width='170px';
+    name.addEventListener('change',()=>{r.name=name.value.trim()||r.name;refresh();});
+    const dot=document.createElement('span');dot.textContent=' ● ';dot.style.color=r.color;
+    const detail=document.createElement('span');
+    detail.textContent=' '+(r.track.estimated?'Estimated':'Timed')+' · '+new Date(r.track.t0).toLocaleString('sv-SE');
+    const del=document.createElement('button');del.textContent='Remove';del.disabled=S.busy;
+    del.addEventListener('click',()=>{if(S.busy)return;S.riders.splice(i,1);S.track=S.riders[0]?.track||null;updateFileInfo();refresh();});
+    row.append(dot,name,detail,del);list.append(row);
+    const option=document.createElement('option');option.value=i;option.textContent=r.name;sel.append(option);
+  });
+  if(S.riders.length)sel.value=old&&Number(old)<S.riders.length?old:'0';
+  else list.textContent='No cyclists loaded.';
+}
+async function useTrackFiles(files){
+  try{
+    const additions=[];
+    for(const f of files){
+      const xml=await f.text(),doc=new DOMParser().parseFromString(xml,'application/xml');
+      const pts=doc.getElementsByTagNameNS('*','trkpt'),nodes=pts.length?pts:doc.getElementsByTagNameNS('*','Trackpoint');
+      const timed=[...nodes].some(p=>firstTag(p,pts.length?'time':'Time')?.textContent?.trim());
+      let synthetic=null;
+      if(!timed){
+        const start=Date.parse($('untimedStart').value),duration=elapsedSeconds($('untimedDuration').value);
+        if(!Number.isFinite(start)||!duration)throw Error(f.name+': enter start date/time and estimated duration.');
+        synthetic={start,duration};
+      }
+      const track=parseTrack(xml,synthetic);
+      additions.push({track,name:f.name.replace(/\.(gpx|tcx)$/i,'').replace(/[_-]+/g,' '),color:riderColors[(S.riders.length+additions.length)%riderColors.length]});
+    }
+    S.riders.push(...additions);S.track=S.riders[0]?.track||null;
+    if(S.scan&&!S.picked){await applyScan();mediaLoaded();return;}
+    defaultOffset();updateFileInfo();setStatus('');refresh();
+  }catch(e){setStatus(e.message,'err');}
 }
 $('videoIn').addEventListener('change', e => { if (e.target.files.length) useMediaFiles(e.target.files); });
 $('folderIn').addEventListener('change', e => { if (e.target.files.length) useFolder(e.target.files); });
-$('trackIn').addEventListener('change', async e => { const f = e.target.files[0]; if (f) useTrack(await f.text()); });
+$('trackIn').addEventListener('change', async e => {if(e.target.files.length)await useTrackFiles([...e.target.files]);e.target.value='';});
+$('telemetryRider').addEventListener('change',refresh);
 $('scrub').addEventListener('input', e => preview(+e.target.value));
 for(const id of ['elapsedStart','elapsedEnd','clipLen'])$(id).addEventListener('input',updateElapsedInfo);
 for (const b of document.querySelectorAll('.offset button[data-d]')) b.addEventListener('click', () => { $('offset').value = ((+$('offset').value || 0) + +b.dataset.d).toFixed(1); refresh(); });
