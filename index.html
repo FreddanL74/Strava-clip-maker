@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Strava Clip Maker v2.7.1</title>
+<title>Strava Clip Maker v2.7.2</title>
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <style>
   :root {
@@ -66,7 +66,7 @@
 <body>
 <main>
   <header>
-    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.7.1</span></h1>
+    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.7.2</span></h1>
     <p class="lead">Combine a GoPro video or time-lapse photos with a Garmin GPX or TCX file into a 30-second portrait time-lapse with overlays. Everything runs locally in your browser; no file leaves this computer.</p>
   </header>
 
@@ -1077,6 +1077,52 @@ function drawFrame(srcT) {
       ctx.fillStyle='#fff';ctx.font='bold 20px Arial';ctx.textAlign='center';ctx.textBaseline='bottom';
       ctx.shadowColor='#000';ctx.shadowBlur=5;ctx.fillText(rider.name,x,y-18);ctx.shadowBlur=0;
     }
+    ctx.restore();
+  }
+  // Render every cyclist as a labelled canvas overlay. This runs for both
+  // preview and MP4 frames and remains visible even when riders overlap.
+  if(L.map?.maplibre && maplibreMap && S.riders.length){
+    const m=L.map,absolute=g.t0+gs*1000;
+    const active=[];
+    for(const rider of S.riders){
+      const rg=rider.track,t=(absolute-rg.t0)/1000;
+      if(!rg.has.map||t<0||t>rg.n-1)continue;
+      const lon=valueAt(rg.lon,t),lat=valueAt(rg.lat,t);
+      if(!Number.isFinite(lon)||!Number.isFinite(lat))continue;
+      const projected=maplibreMap.project([lon,lat]);
+      if(!Number.isFinite(projected.x)||!Number.isFinite(projected.y))continue;
+      active.push({rider,x:m.x+projected.x,y:m.y+projected.y});
+    }
+    ctx.save();ctx.beginPath();ctx.rect(m.x,m.y,m.w,m.h);ctx.clip();
+    const placed=[];
+    for(const p of active){
+      let x=p.x,y=p.y;
+      // Separate labels for riders sharing nearly identical GPS positions.
+      const coincident=placed.filter(v=>Math.hypot(v.x-p.x,v.y-p.y)<45).length;
+      if(coincident){x+=coincident*30;y+=coincident*26;}
+      placed.push({x:p.x,y:p.y});
+      ctx.beginPath();ctx.arc(x,y,15,0,2*Math.PI);
+      ctx.fillStyle=p.rider.color;ctx.fill();
+      ctx.lineWidth=4;ctx.strokeStyle='#fff';ctx.stroke();
+      const label=p.rider.name+(p.rider.track.estimated?' (est.)':'');
+      ctx.font='bold 22px Arial';ctx.textAlign='center';ctx.textBaseline='bottom';
+      const width=ctx.measureText(label).width+20;
+      ctx.fillStyle='rgba(0,0,0,.82)';ctx.fillRect(x-width/2,y-57,width,29);
+      ctx.fillStyle='#fff';ctx.fillText(label,x,y-31);
+    }
+    ctx.restore();
+    // Persistent legend makes all loaded cyclists identifiable even when
+    // a rider is temporarily outside the map viewport or activity time range.
+    const lx=m.x+22,ly=m.y+22;
+    ctx.save();ctx.font='bold 21px Arial';ctx.textBaseline='middle';ctx.textAlign='left';
+    S.riders.forEach((r,i)=>{
+      const activeNow=absolute>=r.track.t0&&absolute<=r.track.t0+(r.track.n-1)*1000;
+      const label=r.name+(r.track.estimated?' · estimated':'')+(activeNow?'':' · outside time range');
+      const y=ly+i*34;
+      ctx.fillStyle='rgba(8,16,25,.82)';ctx.fillRect(lx,y,Math.min(m.w-44,ctx.measureText(label).width+51),31);
+      ctx.beginPath();ctx.arc(lx+16,y+15,8,0,2*Math.PI);ctx.fillStyle=r.color;ctx.fill();
+      ctx.fillStyle=activeNow?'#fff':'#aeb4ba';ctx.fillText(label,lx+32,y+16);
+    });
     ctx.restore();
   }
   // North compass: screen-fixed in the top-right of the map.
