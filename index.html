@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Strava Clip Maker v2.8.0</title>
+<title>Strava Clip Maker v2.8.1</title>
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <style>
   :root {
@@ -66,7 +66,7 @@
 <body>
 <main>
   <header>
-    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.8.0</span></h1>
+    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.8.1</span></h1>
     <p class="lead">Combine a GoPro video or time-lapse photos with a Garmin GPX or TCX file into a 30-second portrait time-lapse with overlays. Everything runs locally in your browser; no file leaves this computer.</p>
   </header>
 
@@ -1254,7 +1254,7 @@ function updateFileInfo() {
   }
   $('fileInfo').textContent = lines.join('\n') || 'No files loaded.';
   updateRiderList();
-  updateElapsedInfo();
+  updateElapsedInfo(true);
   for (const k of ['map', 'hr', 'spd', 'pwr', 'vam', 'relpwr', 'grade']) {
     const box = $('opt' + { map: 'Map', hr: 'Hr', spd: 'Spd', pwr: 'Pwr', vam: 'Vam', relpwr: 'RelPwr', grade: 'Grade' }[k]), missing = g && !g.has[k];
     box.disabled = !!missing; box.closest('label').classList.toggle('off', !!missing);
@@ -1404,13 +1404,24 @@ function exportWindow(){
   if(t1-t0<1)throw Error('Nothing left after trimming.');
   return {t0,t1,len:Math.min(len,t1-t0),elapsed:false};
 }
-function updateElapsedInfo(){
+function formatElapsed(seconds){
+  const n=Math.max(0,Math.round(seconds));
+  return [Math.floor(n/3600),Math.floor(n%3600/60),n%60].map(v=>String(v).padStart(2,'0')).join(':');
+}
+function updateElapsedInfo(syncFromDistance=false){
   try{
+    if(syncFromDistance){
+      const selection=remainingDistanceWindow();
+      if(selection){
+        $('elapsedStart').value=formatElapsed(selection.start);
+        $('elapsedEnd').value=formatElapsed(selection.end);
+      }
+    }
     const a=elapsedSeconds($('elapsedStart').value),b=elapsedSeconds($('elapsedEnd').value);
     const film=Math.min(600,Math.max(3,+$('clipLen').value||29.5));
     const distance=remainingDistanceWindow();
     $('distanceInfo').textContent=distance?
-      distance.from.toFixed(1)+' → '+distance.to.toFixed(1)+' km remaining · '+fmtDur(distance.end-distance.start)+' of activity → '+fmtDur(film)+' video ('+((distance.end-distance.start)/film).toFixed(1)+'×). Distance selection takes priority over elapsed-time fields.':
+      distance.from.toFixed(1)+' → '+distance.to.toFixed(1)+' km remaining · '+fmtDur(distance.end-distance.start)+' of activity → '+fmtDur(film)+' video ('+((distance.end-distance.start)/film).toFixed(1)+'×). Elapsed fields are updated automatically. Edit elapsed time to fine-tune the selection.':
       'Enter e.g. 150 → 120 km remaining. The endpoint of the primary GPS file is treated as the finish.';
     $('elapsedInfo').textContent=a===null&&b===null?'Leave elapsed fields empty to use normal trimming. Maximum video duration: 600 s.':
       a!==null&&b!==null&&b>a?'Activity segment: '+fmtDur(b-a)+' → video: '+fmtDur(film)+' ('+((b-a)/film).toFixed(1)+'× playback speed).':
@@ -1584,7 +1595,15 @@ $('folderIn').addEventListener('change', e => { if (e.target.files.length) useFo
 $('trackIn').addEventListener('change', async e => {if(e.target.files.length)await useTrackFiles([...e.target.files]);e.target.value='';});
 $('telemetryRider').addEventListener('change',refresh);
 $('scrub').addEventListener('input', e => preview(+e.target.value));
-for(const id of ['elapsedStart','elapsedEnd','clipLen','remainingFrom','remainingTo'])$(id).addEventListener('input',updateElapsedInfo);
+for(const id of ['remainingFrom','remainingTo'])$(id).addEventListener('input',()=>{
+  updateElapsedInfo(true);refresh();
+});
+for(const id of ['elapsedStart','elapsedEnd'])$(id).addEventListener('input',()=>{
+  // Manual fine-tuning switches to elapsed-time selection.
+  $('remainingFrom').value='';$('remainingTo').value='';
+  updateElapsedInfo();refresh();
+});
+$('clipLen').addEventListener('input',()=>{updateElapsedInfo();refresh();});
 for (const b of document.querySelectorAll('.offset button[data-d]')) b.addEventListener('click', () => { $('offset').value = ((+$('offset').value || 0) + +b.dataset.d).toFixed(1); refresh(); });
 $('outputMode').addEventListener('change',()=>{
   if(mapOnly()){$('mapMode').value='maplibre';$('mapZoom').value='17';}
