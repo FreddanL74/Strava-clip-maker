@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Strava Clip Maker v2.8.1</title>
+<title>Strava Clip Maker v2.8.2</title>
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <style>
   :root {
@@ -66,7 +66,7 @@
 <body>
 <main>
   <header>
-    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.8.1</span></h1>
+    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.8.2</span></h1>
     <p class="lead">Combine a GoPro video or time-lapse photos with a Garmin GPX or TCX file into a 30-second portrait time-lapse with overlays. Everything runs locally in your browser; no file leaves this computer.</p>
   </header>
 
@@ -142,6 +142,8 @@
         <label>Skip start of video (s)<input type="number" id="trimStart" value="0" min="0" step="1"></label>
         <label>Skip end of video (s)<input type="number" id="trimEnd" value="0" min="0" step="1"></label>
       </div>
+      <label style="display:block;margin-top:12px"><input type="checkbox" id="allPhotos"> Use all loaded GoPro photos (ignore start/end selection and compress full photo series into Clip length)</label>
+      <p class="muted" id="allPhotosInfo">For folders, this includes all JPG photo series, even when there are gaps between recordings.</p>
       <div class="grid2" style="margin-top:12px">
         <label>Elapsed time — start (hh:mm:ss)<input id="elapsedStart" type="text" placeholder="00:00:00"></label>
         <label>Elapsed time — end (hh:mm:ss)<input id="elapsedEnd" type="text" placeholder="00:05:00"></label>
@@ -370,6 +372,14 @@ function pickFromScan() {
   return best;
 }
 async function applyScan() {
+  if($('allPhotos').checked && S.scan?.nImg){
+    const all=S.scan.found.filter(r=>r.kind==='image').flatMap(r=>r.items);
+    if(!all.length)throw Error('No JPG photos found in the folder.');
+    all.sort((a,b)=>a.abs-b.abs||a.file.name.localeCompare(b.file.name));
+    await setPhotos(all);
+    S.picked='All '+all.length+' JPG photos from folder';
+    return;
+  }
   const r = pickFromScan();
   if (!r) {
     const list = S.scan.found.map(x => `${x.label} (${new Date(x.start).toLocaleString('sv-SE')})`).join('; ');
@@ -1377,6 +1387,10 @@ function remainingDistanceWindow(){
   return {start,end,from,to,total};
 }
 function exportWindow(){
+  if($('allPhotos').checked && S.kind==='image' && S.photos.length){
+    const len=Math.min(600,Math.max(3,+$('clipLen').value||29.5));
+    return {t0:0,t1:S.total-0.001,len,allPhotos:true};
+  }
   const start=elapsedSeconds($('elapsedStart').value),end=elapsedSeconds($('elapsedEnd').value);
   const len=Math.min(600,Math.max(3,+$('clipLen').value||29.5));
   const distance=remainingDistanceWindow();
@@ -1409,6 +1423,17 @@ function formatElapsed(seconds){
   return [Math.floor(n/3600),Math.floor(n%3600/60),n%60].map(v=>String(v).padStart(2,'0')).join(':');
 }
 function updateElapsedInfo(syncFromDistance=false){
+  const all=$('allPhotos').checked;
+  for(const id of ['elapsedStart','elapsedEnd','remainingFrom','remainingTo','trimStart','trimEnd'])
+    $(id).disabled=all;
+  $('allPhotosInfo').textContent=all?
+    'Full photo series selected: '+(S.kind==='image'?S.photos.length.toLocaleString('sv-SE')+' photos over '+fmtDur(S.total):'load JPG photos')+'. Export duration is controlled by Clip length (maximum 600 s).':
+    'For folders, this includes all JPG photo series, even when there are gaps between recordings.';
+  if(all){
+    $('distanceInfo').textContent='Distance limits are disabled while all photos are selected.';
+    $('elapsedInfo').textContent='Start/end times are disabled. All photos are mapped to the selected clip length.';
+    return;
+  }
   try{
     if(syncFromDistance){
       const selection=remainingDistanceWindow();
@@ -1544,7 +1569,7 @@ async function useFolder(files) {
   try {
     await scanFolder(files);
     const n = S.scan.found.length;
-    if (!S.track) { updateFileInfo(); setStatus(`Folder scanned: ${S.scan.nImg} photos and ${S.scan.nVid} videos in ${n} series. Now choose the activity file; the matching series is picked automatically.`, 'ok'); return; }
+    if (!S.track && !$('allPhotos').checked) { updateFileInfo(); setStatus(`Folder scanned: ${S.scan.nImg} photos and ${S.scan.nVid} videos in ${n} series. Now choose the activity file; the matching series is picked automatically.`, 'ok'); return; }
     await applyScan(); mediaLoaded();
   } catch (err) { setStatus(err.message, 'err'); }
 }
@@ -1604,6 +1629,12 @@ for(const id of ['elapsedStart','elapsedEnd'])$(id).addEventListener('input',()=
   updateElapsedInfo();refresh();
 });
 $('clipLen').addEventListener('input',()=>{updateElapsedInfo();refresh();});
+$('allPhotos').addEventListener('change',async()=>{
+  try{
+    if(S.scan?.nImg){setStatus('Selecting photos…');await applyScan();mediaLoaded();}
+    else {updateElapsedInfo();refresh();}
+  }catch(e){setStatus(e.message,'err');}
+});
 for (const b of document.querySelectorAll('.offset button[data-d]')) b.addEventListener('click', () => { $('offset').value = ((+$('offset').value || 0) + +b.dataset.d).toFixed(1); refresh(); });
 $('outputMode').addEventListener('change',()=>{
   if(mapOnly()){$('mapMode').value='maplibre';$('mapZoom').value='17';}
