@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Strava Clip Maker v2.8.2</title>
+<title>Strava Clip Maker v2.8.3</title>
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <style>
   :root {
@@ -66,7 +66,7 @@
 <body>
 <main>
   <header>
-    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.8.2</span></h1>
+    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.8.3</span></h1>
     <p class="lead">Combine a GoPro video or time-lapse photos with a Garmin GPX or TCX file into a 30-second portrait time-lapse with overlays. Everything runs locally in your browser; no file leaves this computer.</p>
   </header>
 
@@ -138,12 +138,12 @@
       </div>
       <div class="grid2">
         <label>Privacy zone around start (m, 0 = off)<input type="number" id="privacy" value="500" min="0" step="50"></label>
-        <label>Clip length (s)<input type="number" id="clipLen" value="29.5" min="3" max="600" step="0.5"></label>
+        <label>Output video length (s)<input type="number" id="clipLen" value="29.5" min="3" max="600" step="0.5"></label>
         <label>Skip start of video (s)<input type="number" id="trimStart" value="0" min="0" step="1"></label>
         <label>Skip end of video (s)<input type="number" id="trimEnd" value="0" min="0" step="1"></label>
       </div>
-      <label style="display:block;margin-top:12px"><input type="checkbox" id="allPhotos"> Use all loaded GoPro photos (ignore start/end selection and compress full photo series into Clip length)</label>
-      <p class="muted" id="allPhotosInfo">For folders, this includes all JPG photo series, even when there are gaps between recordings.</p>
+      <label style="display:block;margin-top:12px"><input type="checkbox" id="allPhotos"> Use all GoPro photos as source (ignore source start/end; output duration stays as set below)</label>
+      <p class="muted" id="allPhotosInfo">The source covers all JPG photos, including gaps between recordings. Clip length is the output duration, not the number of seconds of source photos.</p>
       <div class="grid2" style="margin-top:12px">
         <label>Elapsed time — start (hh:mm:ss)<input id="elapsedStart" type="text" placeholder="00:00:00"></label>
         <label>Elapsed time — end (hh:mm:ss)<input id="elapsedEnd" type="text" placeholder="00:05:00"></label>
@@ -1427,11 +1427,11 @@ function updateElapsedInfo(syncFromDistance=false){
   for(const id of ['elapsedStart','elapsedEnd','remainingFrom','remainingTo','trimStart','trimEnd'])
     $(id).disabled=all;
   $('allPhotosInfo').textContent=all?
-    'Full photo series selected: '+(S.kind==='image'?S.photos.length.toLocaleString('sv-SE')+' photos over '+fmtDur(S.total):'load JPG photos')+'. Export duration is controlled by Clip length (maximum 600 s).':
+    'Full source photo series selected: '+(S.kind==='image'?S.photos.length.toLocaleString('sv-SE')+' photos over '+fmtDur(S.total):'load JPG photos')+'. The Clip length field sets only the final MP4 duration (maximum 600 s), not the source image interval.':
     'For folders, this includes all JPG photo series, even when there are gaps between recordings.';
   if(all){
     $('distanceInfo').textContent='Distance limits are disabled while all photos are selected.';
-    $('elapsedInfo').textContent='Start/end times are disabled. All photos are mapped to the selected clip length.';
+    $('elapsedInfo').textContent='Source start/end times are disabled. All photos are used; Clip length controls only the exported video duration.';
     return;
   }
   try{
