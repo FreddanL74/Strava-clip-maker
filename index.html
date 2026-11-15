@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Strava Clip Maker v2.8.3</title>
+<title>Strava Clip Maker v2.8.4</title>
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <style>
   :root {
@@ -66,7 +66,7 @@
 <body>
 <main>
   <header>
-    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.8.3</span></h1>
+    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.8.4</span></h1>
     <p class="lead">Combine a GoPro video or time-lapse photos with a Garmin GPX or TCX file into a 30-second portrait time-lapse with overlays. Everything runs locally in your browser; no file leaves this computer.</p>
   </header>
 
@@ -120,6 +120,8 @@
           <label class="field">Map height <output id="flyHeightValue">560 px</output>
             <input id="flyHeight" type="range" min="350" max="650" step="10" value="560">
           </label>
+          <label><input type="checkbox" id="showRiderNames" checked> Show cyclist names on map</label>
+          <label><input type="checkbox" id="showRiderDots" checked> Show cyclist dots / position markers on map</label>
           <small class="muted">Auto uses activity timestamp and your browser's local timezone.</small>
         </div>
         <label><input type="checkbox" id="optHr" checked> Heart rate <small data-for="hr"></small></label>
@@ -868,6 +870,11 @@ async function updateMapLibreFrame(m,gs,g,waitForTiles=false){
   }
   updateMapLibreRoute(map,m,g,gs);
   updateOtherRiders(map,gs);
+  const showNames=$('showRiderNames').checked,showDots=$('showRiderDots').checked;
+  for(const id of ['other-riders-names','other-riders-dots','fly-rider-symbol']){
+    if(map.getLayer(id))map.setLayoutProperty(id,'visibility',
+      id==='other-riders-names'?(showNames?'visible':'none'):(showDots?'visible':'none'));
+  }
   // Geographic heading is independent of whether the camera rotates.
   // A map-aligned icon otherwise always points to geographic north.
   if(map.getLayer('fly-rider-symbol')){
@@ -1110,7 +1117,7 @@ function drawFrame(srcT) {
   }
   // Render every cyclist as a labelled canvas overlay. This runs for both
   // preview and MP4 frames and remains visible even when riders overlap.
-  if(L.map?.maplibre && maplibreMap && S.riders.length){
+  if(L.map?.maplibre && maplibreMap && S.riders.length && ($('showRiderNames').checked || $('showRiderDots').checked)){
     const m=L.map,absolute=g.t0+gs*1000;
     const active=[];
     for(const rider of S.riders){
@@ -1130,9 +1137,12 @@ function drawFrame(srcT) {
       const coincident=placed.filter(v=>Math.hypot(v.x-p.x,v.y-p.y)<45).length;
       if(coincident){x+=coincident*30;y+=coincident*26;}
       placed.push({x:p.x,y:p.y});
-      ctx.beginPath();ctx.arc(x,y,15,0,2*Math.PI);
-      ctx.fillStyle=p.rider.color;ctx.fill();
-      ctx.lineWidth=4;ctx.strokeStyle='#fff';ctx.stroke();
+      if($('showRiderDots').checked){
+        ctx.beginPath();ctx.arc(x,y,15,0,2*Math.PI);
+        ctx.fillStyle=p.rider.color;ctx.fill();
+        ctx.lineWidth=4;ctx.strokeStyle='#fff';ctx.stroke();
+      }
+      if(!$('showRiderNames').checked)continue;
       const label=p.rider.name+(p.rider.track.estimated?' (est.)':'');
       ctx.font='bold 22px Arial';ctx.textAlign='center';ctx.textBaseline='bottom';
       const width=ctx.measureText(label).width+20;
@@ -1144,7 +1154,7 @@ function drawFrame(srcT) {
     // a rider is temporarily outside the map viewport or activity time range.
     const lx=m.x+22,ly=m.y+22;
     ctx.save();ctx.font='bold 21px Arial';ctx.textBaseline='middle';ctx.textAlign='left';
-    S.riders.forEach((r,i)=>{
+    if($('showRiderNames').checked)S.riders.forEach((r,i)=>{
       const activeNow=absolute>=r.track.t0&&absolute<=r.track.t0+(r.track.n-1)*1000;
       const label=r.name+(r.track.estimated?' · estimated':'')+(activeNow?'':' · outside time range');
       const y=ly+i*34;
