@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Strava Clip Maker v2.8.4</title>
+<title>Strava Clip Maker v2.8.5</title>
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <style>
   :root {
@@ -66,7 +66,7 @@
 <body>
 <main>
   <header>
-    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.8.4</span></h1>
+    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.8.5</span></h1>
     <p class="lead">Combine a GoPro video or time-lapse photos with a Garmin GPX or TCX file into a 30-second portrait time-lapse with overlays. Everything runs locally in your browser; no file leaves this computer.</p>
   </header>
 
@@ -121,7 +121,7 @@
             <input id="flyHeight" type="range" min="350" max="650" step="10" value="560">
           </label>
           <label><input type="checkbox" id="showRiderNames" checked> Show cyclist names on map</label>
-          <label><input type="checkbox" id="showRiderDots" checked> Show cyclist dots / position markers on map</label>
+          <label><input type="checkbox" id="showRiderDots" checked> Show cyclist dots (keep Volvo-style navigation ring and arrow)</label>
           <small class="muted">Auto uses activity timestamp and your browser's local timezone.</small>
         </div>
         <label><input type="checkbox" id="optHr" checked> Heart rate <small data-for="hr"></small></label>
@@ -871,7 +871,7 @@ async function updateMapLibreFrame(m,gs,g,waitForTiles=false){
   updateMapLibreRoute(map,m,g,gs);
   updateOtherRiders(map,gs);
   const showNames=$('showRiderNames').checked,showDots=$('showRiderDots').checked;
-  for(const id of ['other-riders-names','other-riders-dots','fly-rider-symbol']){
+  for(const id of ['other-riders-names','other-riders-dots']){
     if(map.getLayer(id))map.setLayoutProperty(id,'visibility',
       id==='other-riders-names'?(showNames?'visible':'none'):(showDots?'visible':'none'));
   }
