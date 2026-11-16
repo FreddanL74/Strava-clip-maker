@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Strava Clip Maker v2.8.5</title>
+<title>Strava Clip Maker v2.8.6</title>
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <style>
   :root {
@@ -66,7 +66,7 @@
 <body>
 <main>
   <header>
-    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.8.5</span></h1>
+    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.8.6</span></h1>
     <p class="lead">Combine a GoPro video or time-lapse photos with a Garmin GPX or TCX file into a 30-second portrait time-lapse with overlays. Everything runs locally in your browser; no file leaves this computer.</p>
   </header>
 
@@ -713,6 +713,9 @@ async function ensureMapLibre(){
       center:[18.06,59.33],zoom:17,pitch:60,bearing:0,
       interactive:false,attributionControl:false,
       preserveDrawingBuffer:true,fadeDuration:0,antialias:true,
+      // The map is copied 1:1 into the 1080-px output canvas; rendering at the
+      // screen's devicePixelRatio (1.5–2× on laptops) only costs GPU time.
+      pixelRatio:1,
       maxPitch:85
     });
     await new Promise((resolve,reject)=>{
@@ -802,9 +805,19 @@ function updateOtherRiders(map,seconds){
     map.addLayer({id:'other-riders-names',type:'symbol',source:'other-riders',layout:{'text-field':['get','name'],'text-size':17,'text-offset':[0,1.8],'text-anchor':'top','text-allow-overlap':true},paint:{'text-color':'#fff','text-halo-color':'#111','text-halo-width':2}});
   }
 }
-function updateMapLibreRoute(map,m,g,gs){
+// Completed route is split into fixed chunks that change rarely, so each
+// frame only re-sends a bounded number of points to MapLibre's worker.
+const FLY_ROUTE_CHUNK=1200;
+function setFlyLine(map,id,data,color,width){
+  if(map.getSource(id)){map.getSource(id).setData(data);return;}
+  map.addSource(id,{type:'geojson',data});
+  map.addLayer({id:id+'-line',type:'line',source:id,layout:{'line-cap':'round','line-join':'round'},
+    paint:{'line-color':color,'line-width':width,'line-opacity':.95}});
+}
+function updateMapLibreRoute(map,m,g,gs,heading){
   const current=Math.max(0,Math.min(g.n-1,Math.floor(gs)));
   const recent=Math.max(0,current-90);
+  const chunkEnd=Math.floor(recent/FLY_ROUTE_CHUNK)*FLY_ROUTE_CHUNK;
   // Use the exact interpolated GPS coordinate for both the orange endpoint
   // and the rider symbol. Camera smoothing must never displace the rider.
   const rider=[valueAt(g.lon,gs),valueAt(g.lat,gs)];
@@ -820,26 +833,25 @@ function updateMapLibreRoute(map,m,g,gs){
     if(points.length>1)features.push(flyLine(points));
     return {type:'FeatureCollection',features};
   };
-  for(const [id,start,end,color,width] of [
-    ['fly-past',0,recent,'#4785C7',5],
-    ['fly-recent',recent,current,'#FF8C00',8]
-  ]){
-    const data=segments(start,end);
-    if(id==='fly-recent' && !m.hidden[current] && rider.every(Number.isFinite)){
-      const last=data.features[data.features.length-1];
-      if(last)last.geometry.coordinates.push(rider);
-      else if(current>0&&!m.hidden[current-1])data.features.push(flyLine([[g.lon[current-1],g.lat[current-1]],rider]));
-    }
-    if(map.getSource(id))map.getSource(id).setData(data);
-    else{
-      map.addSource(id,{type:'geojson',data});
-      map.addLayer({id:id+'-line',type:'line',source:id,
-        paint:{'line-color':color,'line-width':width,'line-opacity':.95}});
-    }
+  const keys=map._flyRouteKeys||(map._flyRouteKeys={});
+  for(const [id,start,end] of [['fly-past-old',0,chunkEnd],['fly-past',chunkEnd,recent]]){
+    const key=start+':'+end;
+    if(keys[id]===key)continue;
+    keys[id]=key;
+    setFlyLine(map,id,segments(start,end),'#4785C7',5);
   }
+  const data=segments(recent,current);
+  if(!m.hidden[current] && rider.every(Number.isFinite)){
+    const last=data.features[data.features.length-1];
+    if(last)last.geometry.coordinates.push(rider);
+    else if(current>0&&!m.hidden[current-1])data.features.push(flyLine([[g.lon[current-1],g.lat[current-1]],rider]));
+  }
+  setFlyLine(map,'fly-recent',data,'#FF8C00',8);
   // Symbol and track share MapLibre's geographic rendering pipeline.
   // This avoids 2D canvas projection offsets over pitched 3D terrain.
-  const riderData={type:'Feature',geometry:{type:'Point',coordinates:rider},properties:{}};
+  // Heading is a feature property: changing a layout property would force
+  // MapLibre to reload the source on every frame.
+  const riderData={type:'Feature',geometry:{type:'Point',coordinates:rider},properties:{bearing:heading}};
   if(map.getSource('fly-rider'))map.getSource('fly-rider').setData(riderData);
   else {
     // Volvo-style navigation marker: ground-plane circular ring with an
@@ -857,8 +869,51 @@ function updateMapLibreRoute(map,m,g,gs){
     map.addSource('fly-rider',{type:'geojson',data:riderData});
     map.addLayer({id:'fly-rider-symbol',type:'symbol',source:'fly-rider',
       layout:{'icon-image':'fly-rider-icon','icon-size':1.15,'icon-allow-overlap':true,
-        'icon-ignore-placement':true,'icon-pitch-alignment':'map','icon-rotation-alignment':'map'}});
+        'icon-ignore-placement':true,'icon-pitch-alignment':'map','icon-rotation-alignment':'map',
+        'icon-rotate':['get','bearing']}});
   }
+}
+// Warm the browser HTTP cache with vector and terrain tiles around upcoming
+// export positions, so network fetches overlap rendering of earlier frames.
+// Best effort: MapLibre still requests tiles itself; failures are ignored.
+const flyPrefetched=new Set(),flyPrefetchQueue=[];let flyPrefetchActive=0;
+function flyTileTemplates(map){
+  if(map._flyTemplates)return map._flyTemplates;
+  const out=[];
+  for(const id of Object.keys(map.getStyle().sources)){
+    const src=map.getSource(id);
+    if(!src||!['vector','raster-dem'].includes(src.type)||!Array.isArray(src.tiles)||!src.tiles.length)continue;
+    out.push({tpl:src.tiles[0],minzoom:src.minzoom||0,maxzoom:Number.isFinite(src.maxzoom)?src.maxzoom:14});
+  }
+  if(out.length)map._flyTemplates=out;
+  return out;
+}
+function pumpFlyPrefetch(){
+  while(flyPrefetchActive<6&&flyPrefetchQueue.length){
+    const url=flyPrefetchQueue.shift();flyPrefetchActive++;
+    fetch(url).then(r=>r.ok?r.arrayBuffer():null).catch(()=>null)
+      .finally(()=>{flyPrefetchActive--;pumpFlyPrefetch();});
+  }
+}
+function prefetchFlyTiles(map,m,g,gs){
+  if(!map||!g?.lon)return;
+  const lon=valueAt(g.lon,Math.max(0,Math.min(g.n-1,gs))),lat=valueAt(g.lat,Math.max(0,Math.min(g.n-1,gs)));
+  if(!Number.isFinite(lon)||!Number.isFinite(lat))return;
+  for(const t of flyTileTemplates(map)){
+    const zt=Math.max(t.minzoom,Math.min(t.maxzoom,Math.floor(m.zoom)));
+    for(const [z,r] of [[zt,1],[zt-1,1],[zt-2,0]]){
+      if(z<t.minzoom||z<0)continue;
+      const n=2**z,cx=Math.floor(mercX(lon)*n),cy=Math.floor(mercY(lat)*n);
+      for(let dy=-r;dy<=r;dy++)for(let dx=-r;dx<=r;dx++){
+        const y=cy+dy;if(y<0||y>=n)continue;
+        const x=((cx+dx)%n+n)%n;
+        const url=t.tpl.replace('{z}',z).replace('{x}',x).replace('{y}',y);
+        if(flyPrefetched.has(url))continue;
+        flyPrefetched.add(url);flyPrefetchQueue.push(url);
+      }
+    }
+  }
+  pumpFlyPrefetch();
 }
 async function updateMapLibreFrame(m,gs,g,waitForTiles=false){
   const map=await ensureMapLibre();
@@ -866,34 +921,34 @@ async function updateMapLibreFrame(m,gs,g,waitForTiles=false){
   const [lon,lat]=smoothedFlyPosition(g,gs,m.smooth);
   if(!Number.isFinite(lon)||!Number.isFinite(lat))return;
   if(maplibreRouteTrack!==g||maplibreRoutePrivacy!==m.hidden){
-    maplibreRouteTrack=g;maplibreRoutePrivacy=m.hidden;
-  }
-  updateMapLibreRoute(map,m,g,gs);
-  updateOtherRiders(map,gs);
-  const showNames=$('showRiderNames').checked,showDots=$('showRiderDots').checked;
-  for(const id of ['other-riders-names','other-riders-dots']){
-    if(map.getLayer(id))map.setLayoutProperty(id,'visibility',
-      id==='other-riders-names'?(showNames?'visible':'none'):(showDots?'visible':'none'));
+    maplibreRouteTrack=g;maplibreRoutePrivacy=m.hidden;map._flyRouteKeys={};
   }
   // Geographic heading is independent of whether the camera rotates.
   // A map-aligned icon otherwise always points to geographic north.
-  if(map.getLayer('fly-rider-symbol')){
-    map.setLayoutProperty('fly-rider-symbol','icon-rotate',mapBearing(m,gs,true)*180/Math.PI);
+  const heading=mapBearing(m,gs,true)*180/Math.PI;
+  updateMapLibreRoute(map,m,g,gs,heading);
+  updateOtherRiders(map,gs);
+  const showNames=$('showRiderNames').checked,showDots=$('showRiderDots').checked;
+  const vis=map._flyVis||(map._flyVis={});
+  for(const [id,on] of [['other-riders-names',showNames],['other-riders-dots',showDots]]){
+    const v=on?'visible':'none';
+    if(map.getLayer(id)&&vis[id]!==v){map.setLayoutProperty(id,'visibility',v);vis[id]=v;}
   }
   applyFlyTheme(map,desiredFlyTheme(m,gs,g));
   if(map._flyTerrainExaggeration!==m.terrain){
     map.setTerrain({source:'fly-dem',exaggeration:m.terrain});
     map._flyTerrainExaggeration=m.terrain;
   }
-  const bearing=mapBearing(m,gs)*180/Math.PI;
+  const bearing=m.rotate?heading:0;
   const topPadding=Math.max(0,Math.round((2*m.anchor-1)*m.h));
   map.jumpTo({center:[lon,lat],zoom:m.zoom,pitch:m.pitch,bearing,
     padding:{top:topPadding,bottom:0,left:0,right:0}});
   if(waitForTiles){
-    await Promise.race([new Promise(resolve=>map.once('idle',resolve)),
-      new Promise(resolve=>setTimeout(resolve,1800))]);
-    map.triggerRepaint();
-    await Promise.race([new Promise(resolve=>map.once('render',resolve)),new Promise(resolve=>setTimeout(resolve,350))]);
+    // 'idle' fires right after a completed render with all tiles loaded;
+    // preserveDrawingBuffer keeps that frame readable, so no extra repaint.
+    let onIdle,timer;
+    await new Promise(resolve=>{onIdle=resolve;timer=setTimeout(resolve,1800);map.once('idle',onIdle);});
+    clearTimeout(timer);map.off('idle',onIdle);
   }else await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
 }
 function drawMapLibreFrame(m,gs,g){
@@ -1521,9 +1576,13 @@ async function render() {
       if(enc.state!=='configured')throw Error('Video encoder closed unexpectedly. The browser may have exhausted GPU/video encoder resources.');
     };
     const started = performance.now();
+    const frameGs = j => t0 + (t1 - t0) * Math.min(j, N - 1) / (N - 1) + (+$('offset').value || 0);
+    const LOOKAHEAD = 45;
+    if (S.layout.map?.maplibre) for (let j = 0; j < LOOKAHEAD; j++) prefetchFlyTiles(maplibreMap, S.layout.map, S.track, frameGs(j));
     for (let i = 0; i < N; i++) {
       checkEncoder();
       const srcT = t0 + (t1 - t0) * i / (N - 1);
+      if (S.layout.map?.maplibre && i + LOOKAHEAD < N) prefetchFlyTiles(maplibreMap, S.layout.map, S.track, frameGs(i + LOOKAHEAD));
       if(hasMedia()&&!mapOnly())await seekTo(srcT);
       if (S.layout.map?.maplibre) {
         await updateMapLibreFrame(S.layout.map,srcT+(+$('offset').value||0),S.track,true);
@@ -1542,7 +1601,8 @@ async function render() {
       if (i % 5 === 0) {
         $('prog').value = i / N;
         const el = (performance.now() - started) / 1000, eta = i ? el / i * (N - i) : 0;
-        setStatus(`Rendering frame ${i + 1} of ${N}` + (i > 10 ? ` · about ${fmtDur(eta)} left` : ''));
+        setStatus(`Rendering frame ${i + 1} of ${N}` + (i > 10 ? ` · about ${fmtDur(eta)} left` : '') +
+          (document.hidden && S.layout.map?.maplibre ? ' · keep this tab visible: the browser pauses 3D map rendering in background tabs' : ''));
       }
     }
     checkEncoder();
