@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Strava Clip Maker v2.8.7</title>
+<title>Strava Clip Maker v2.8.8</title>
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <style>
   :root {
@@ -66,7 +66,7 @@
 <body>
 <main>
   <header>
-    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.8.7</span></h1>
+    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.8.8</span></h1>
     <p class="lead">Combine a GoPro video or time-lapse photos with a Garmin GPX or TCX file into a 30-second portrait time-lapse with overlays. Everything runs locally in your browser; no file leaves this computer.</p>
   </header>
 
@@ -95,7 +95,7 @@
 <label class="field">Output layout <select id="outputMode"><option value="combined">GoPro + map</option><option value="gopro">GoPro only — full frame</option><option value="map">Map only — full frame</option></select></label>
       <div class="checks" id="checks">
         <label><input type="checkbox" id="optMap" checked> GPS trace (map) <small data-for="map"></small></label>
-        <label><input type="checkbox" id="optBasemap" checked> OpenStreetMap background (requires internet)</label>
+        <label><input type="checkbox" id="optBasemap" checked> Map background — CARTO / OpenStreetMap data (requires internet)</label>
         <label>Map movement
           <select id="mapMode"><option value="static">Static — whole route</option><option value="follow">Animated — follow position</option><option value="flyover">3D Flyover — legacy perspective</option><option value="maplibre">MapLibre 3D Flyover — buildings + terrain</option></select>
         </label>
@@ -132,7 +132,7 @@
         <label><input type="checkbox" id="optGrade"> Gradient / lutning (%) <small data-for="grade"></small></label>
         <label><input type="checkbox" id="optTime" checked> Time of day</label>
       </div>
-      <p class="muted">Map background uses © OpenStreetMap contributors. In animated mode the map follows the GPS position. Only required tiles are cached for the selected clip. If unavailable, the original plain GPS map is used.</p>
+      <p class="muted">2D map background uses CARTO Voyager tiles (© OpenStreetMap contributors © CARTO); the volunteer-run tile.openstreetmap.org servers block this kind of use. In animated mode the map follows the GPS position. Only required tiles are cached for the selected clip. If unavailable, the original plain GPS map is used.</p>
       <hr>
       <div class="checks">
         <label><input type="checkbox" id="optFlip"> Rotate video 180° (camera upside down)</label>
@@ -551,7 +551,12 @@ function parseTrack(text,synthetic=null) {
   };
 }
 
-// ---------- static OpenStreetMap background ----------
+// ---------- 2D raster map background ----------
+// CARTO Voyager raster tiles (OpenStreetMap data). tile.openstreetmap.org is
+// not used: its usage policy blocks local files (no Referer) and bulk
+// prefetching, which returns "Access blocked" tiles.
+const TILE_HOSTS = ['a', 'b', 'c', 'd'];
+const tileUrl = (z, x, y) => `https://${TILE_HOSTS[(x + y) % 4]}.basemaps.cartocdn.com/rastertiles/voyager/${z}/${x}/${y}.png`;
 // Fetch only the handful of tiles visible in the fixed map panel, once per route.
 // Tile images are reused for every video frame; no per-frame tile requests.
 const mapTiles = new Map();
@@ -569,7 +574,7 @@ function loadMapTile(z, x, y) {
     const img = new Image(); img.crossOrigin = 'anonymous';
     img.onload = () => { loadedTiles.set(key, img); failedTiles.delete(key); resolve(img); };
     img.onerror = () => { failedTiles.add(key); mapTiles.delete(key); resolve(null); };
-    img.src = `https://tile.openstreetmap.org/${key}.png`;
+    img.src = tileUrl(z, wrappedX, y);
   });
   mapTiles.set(key, job);
   return job;
@@ -1117,9 +1122,9 @@ function drawFrame(srcT) {
         ctx.fillStyle = '#FFFFFF'; ctx.font = '24px Arial, sans-serif'; ctx.textAlign = 'center';
         ctx.fillText(f.tiles.some(t => failedTiles.has(t.key)) ? 'Map tiles unavailable — check connection' : 'Loading map tiles…', m.x + m.w / 2, m.y + m.h / 2);
       }
-      ctx.fillStyle = 'rgba(0,0,0,.62)'; ctx.fillRect(m.x + 8, m.y + m.h - 32, 338, 25);
+      ctx.fillStyle = 'rgba(0,0,0,.62)'; ctx.fillRect(m.x + 8, m.y + m.h - 32, 430, 25);
       ctx.font = '20px Arial, sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-      ctx.fillStyle = '#FFFFFF'; ctx.fillText('© OpenStreetMap contributors', m.x + 16, m.y + m.h - 19);
+      ctx.fillStyle = '#FFFFFF'; ctx.fillText('© OpenStreetMap contributors © CARTO', m.x + 16, m.y + m.h - 19);
     }
     if (!m.flyover && !m.maplibre) {
     ctx.save(); if(m.fullMap){ctx.beginPath();ctx.rect(m.x,m.y,m.w,m.h);}else roundRect(m.x,m.y,m.w,m.h,18);ctx.clip();
