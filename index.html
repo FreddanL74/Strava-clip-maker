@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Strava Clip Maker v2.8.8</title>
+<title>Strava Clip Maker v2.8.9</title>
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <style>
   :root {
@@ -60,13 +60,13 @@
     main { grid-template-columns: 1fr; }
     aside { position: static; max-width: 320px; }
   }
-  #maplibreHost {position:fixed;left:-12000px;top:0;width:1000px;height:560px;pointer-events:none;overflow:hidden}
+  #maplibreHost, #flatHost {position:fixed;left:-12000px;top:0;width:1000px;height:560px;pointer-events:none;overflow:hidden}
 </style>
 </head>
 <body>
 <main>
   <header>
-    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.8.8</span></h1>
+    <h1>Strava clip maker <span id="appVersion" style="font-size:.55em;color:var(--accent);white-space:nowrap">v2.8.9</span></h1>
     <p class="lead">Combine a GoPro video or time-lapse photos with a Garmin GPX or TCX file into a 30-second portrait time-lapse with overlays. Everything runs locally in your browser; no file leaves this computer.</p>
   </header>
 
@@ -95,7 +95,7 @@
 <label class="field">Output layout <select id="outputMode"><option value="combined">GoPro + map</option><option value="gopro">GoPro only — full frame</option><option value="map">Map only — full frame</option></select></label>
       <div class="checks" id="checks">
         <label><input type="checkbox" id="optMap" checked> GPS trace (map) <small data-for="map"></small></label>
-        <label><input type="checkbox" id="optBasemap" checked> Map background — CARTO / OpenStreetMap data (requires internet)</label>
+        <label><input type="checkbox" id="optBasemap" checked> Map background — OpenFreeMap / OpenStreetMap data (requires internet)</label>
         <label>Map movement
           <select id="mapMode"><option value="static">Static — whole route</option><option value="follow">Animated — follow position</option><option value="flyover">3D Flyover — legacy perspective</option><option value="maplibre">MapLibre 3D Flyover — buildings + terrain</option></select>
         </label>
@@ -132,7 +132,7 @@
         <label><input type="checkbox" id="optGrade"> Gradient / lutning (%) <small data-for="grade"></small></label>
         <label><input type="checkbox" id="optTime" checked> Time of day</label>
       </div>
-      <p class="muted">2D map background uses CARTO Voyager tiles (© OpenStreetMap contributors © CARTO); the volunteer-run tile.openstreetmap.org servers block this kind of use. In animated mode the map follows the GPS position. Only required tiles are cached for the selected clip. If unavailable, the original plain GPS map is used.</p>
+      <p class="muted">2D and 3D map backgrounds use OpenFreeMap (© OpenStreetMap contributors), which needs no API key. In animated mode the map follows the GPS position. Only required tiles are cached for the selected clip. If unavailable, the original plain GPS map is used.</p>
       <hr>
       <div class="checks">
         <label><input type="checkbox" id="optFlip"> Rotate video 180° (camera upside down)</label>
@@ -190,6 +190,7 @@
 </main>
 
 <div id="maplibreHost" aria-hidden="true"></div>
+<div id="flatHost" aria-hidden="true"></div>
 <script type="module">
 import { Muxer, ArrayBufferTarget } from 'https://cdn.jsdelivr.net/npm/mp4-muxer@5.1.3/+esm';
 
@@ -551,34 +552,13 @@ function parseTrack(text,synthetic=null) {
   };
 }
 
-// ---------- 2D raster map background ----------
-// CARTO Voyager raster tiles (OpenStreetMap data). tile.openstreetmap.org is
-// not used: its usage policy blocks local files (no Referer) and bulk
-// prefetching, which returns "Access blocked" tiles.
-const TILE_HOSTS = ['a', 'b', 'c', 'd'];
-const tileUrl = (z, x, y) => `https://${TILE_HOSTS[(x + y) % 4]}.basemaps.cartocdn.com/rastertiles/voyager/${z}/${x}/${y}.png`;
-// Fetch only the handful of tiles visible in the fixed map panel, once per route.
-// Tile images are reused for every video frame; no per-frame tile requests.
-const mapTiles = new Map();
-const loadedTiles = new Map();
-const failedTiles = new Set();
+// ---------- 2D map background ----------
+// Rendered top-down by a separate MapLibre map with the OpenFreeMap style.
+// Raster tile servers are not used: tile.openstreetmap.org blocks local files
+// and bulk prefetching, and CARTO now requires an API key.
+// One MapLibre zoom step at 512-px tiles equals our 256-px world at zoom+1.
 const mercY = lat => { const r = Math.max(-85.0511, Math.min(85.0511, lat)) * Math.PI / 180; return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2; };
 const mercX = lon => (lon + 180) / 360;
-function loadMapTile(z, x, y) {
-  const n = 2 ** z;
-  if (y < 0 || y >= n) return Promise.resolve(null);
-  const wrappedX = ((x % n) + n) % n;
-  const key = `${z}/${wrappedX}/${y}`;
-  if (mapTiles.has(key)) return mapTiles.get(key);
-  const job = new Promise(resolve => {
-    const img = new Image(); img.crossOrigin = 'anonymous';
-    img.onload = () => { loadedTiles.set(key, img); failedTiles.delete(key); resolve(img); };
-    img.onerror = () => { failedTiles.add(key); mapTiles.delete(key); resolve(null); };
-    img.src = tileUrl(z, wrappedX, y);
-  });
-  mapTiles.set(key, job);
-  return job;
-}
 // Camera coordinates are deterministic functions of activity time, so seeking
 // and MP4 rendering give the same view, independent of preview frame order.
 function cameraPosition(m, gs) {
@@ -616,34 +596,62 @@ function mapBearing(m, gs, forceHeading=false) {
   return weight && Math.hypot(sx,sy)>0.15 ? Math.atan2(sx,-sy) : 0;
 }
 function followTiles(m, gs) {
-  const p=cameraPosition(m,gs), anchorY=m.y+m.h*m.anchor;
-  const left=p.x-m.w/2,upper=p.y-m.h*m.anchor;
-  // Rotation around rider anchor. Cover the full rotated viewport.
-  const extra=m.flyover ? Math.max(m.w,m.h)*1.7 : m.rotate?Math.hypot(m.w/2,Math.max(m.anchor,1-m.anchor)*m.h)+32:0;
-  const result=[];
-  const minX=m.rotate?p.x-extra:p.x-m.w/2;
-  const maxX=m.rotate?p.x+extra:p.x+m.w/2;
-  const minY=m.rotate?p.y-extra:p.y-m.h*m.anchor;
-  const maxY=m.rotate?p.y+extra:p.y+m.h*(1-m.anchor);
-  for(let ty=Math.floor(minY/256);ty<=Math.floor(maxY/256);ty++)
-    for(let tx=Math.floor(minX/256);tx<=Math.floor(maxX/256);tx++)
-      result.push({tx,ty,x:m.x+tx*256-left,y:m.y+ty*256-upper,
-        key:`${m.zoom}/${((tx%(2**m.zoom))+(2**m.zoom))%(2**m.zoom)}/${ty}`});
-  return {tiles:result,left,upper,anchorX:m.x+m.w/2,anchorY};
+  const p=cameraPosition(m,gs);
+  return {left:p.x-m.w/2,upper:p.y-m.h*m.anchor,anchorX:m.x+m.w/2,anchorY:m.y+m.h*m.anchor};
 }
-async function prepareFollowTiles(m, srcT) {
-  const gs = srcT + (+$('offset').value || 0);
-  const f = followTiles(m, gs);
-  await Promise.all(f.tiles.map(t => loadMapTile(m.zoom, t.tx, t.ty)));
+const worldToLngLat=(x,y,world)=>[x/world*360-180,Math.atan(Math.sinh(Math.PI*(1-2*y/world)))*180/Math.PI];
+// Padding that places the map centre (rotation point) at the anchor height.
+function anchorPadding(h,anchor){
+  const p=Math.round(Math.abs(2*anchor-1)*h);
+  return anchor>=.5?{top:p,bottom:0,left:0,right:0}:{top:0,bottom:p,left:0,right:0};
 }
+let flatMap=null,flatReady=null;
+async function ensureFlatMap(){
+  if(flatMap)return flatMap;
+  if(flatReady)return flatReady;
+  flatReady=(async()=>{
+    const ml=await loadMapLibre();
+    const map=new ml.Map({container:'flatHost',style:'https://tiles.openfreemap.org/styles/liberty',
+      center:[18.06,59.33],zoom:12,pitch:0,bearing:0,interactive:false,attributionControl:false,
+      preserveDrawingBuffer:true,fadeDuration:0,antialias:true,pixelRatio:1});
+    await new Promise((resolve,reject)=>{
+      map.once('load',resolve);map.once('error',e=>{if(!map.loaded())reject(e.error||Error('Map style load failed'));});
+    });
+    // Flat map: no 3D building extrusions.
+    for(const l of map.getStyle().layers)if(l.type==='fill-extrusion')map.setLayoutProperty(l.id,'visibility','none');
+    flatMap=map;
+    return map;
+  })().catch(e=>{flatReady=null;throw e;});
+  return flatReady;
+}
+async function renderFlat(w,h,center,zoom,bearing,padding,limit){
+  const map=await ensureFlatMap(),host=$('flatHost');
+  if(host.style.width!==w+'px'||host.style.height!==h+'px'){host.style.width=w+'px';host.style.height=h+'px';map.resize();}
+  map.jumpTo({center,zoom,bearing,pitch:0,padding});
+  await renderMapSettled(map,limit);
+  return map.getCanvas();
+}
+// Animated 2D / legacy flyover: background for the current camera position.
+async function updateFlatFrame(m,gs,wait){
+  const p=cameraPosition(m,gs),center=worldToLngLat(p.x,p.y,m.world);
+  const bearing=m.rotate?mapBearing(m,gs)*180/Math.PI:0;
+  if(m.flyover){const w=Math.round(m.w*1.8),h=Math.round(m.h*1.8);await renderFlat(w,h,center,m.zoom-1,bearing,anchorPadding(h,.66),wait?1800:400);}
+  else await renderFlat(m.w,m.h,center,m.zoom-1,bearing,anchorPadding(m.h,m.anchor),wait?1800:400);
+  m.flatReady=true;
+}
+// Static map: render the whole-route background once and keep a copy.
+let staticBg={key:null,img:null};
 async function prepareMapTiles() {
   const m = S.layout?.map;
   if (!m?.basemap || m.follow) return;
-  const jobs = m.tiles.map(t => loadMapTile(m.zoom, t.tx, t.ty));
-  const images = await Promise.all(jobs);
+  const key=[m.w,m.h,m.zoom,m.left,m.upper].join();
+  if(staticBg.key!==key){
+    const c=await renderFlat(m.w,m.h,worldToLngLat(m.left+m.w/2,m.upper+m.h/2,m.world),m.zoom-1,0,{top:0,bottom:0,left:0,right:0},5000);
+    const img=document.createElement('canvas');img.width=m.w;img.height=m.h;img.getContext('2d').drawImage(c,0,0);
+    staticBg={key,img};
+  }
   if (S.layout?.map !== m) return;
-  m.tiles.forEach((t, i) => { t.img = images[i]; });
-  m.ready = true;
+  m.bg=staticBg.img;m.ready = true;
 }
 // ---------- layout ----------
 const opt = () => ({
@@ -670,7 +678,7 @@ function buildLayout() {
     const h = fullMap?H:Math.max(90, Math.round(spanY * scale + 2 * pad));
     const px = new Float64Array(g.n), py = new Float64Array(g.n), hidden = new Uint8Array(g.n);
     const R2 = o.privacy * o.privacy, near = (i, j) => { const dy = (g.lat[i] - g.lat[j]) * 111320, dx = (g.lon[i] - g.lon[j]) * 111320 * kx; return dx * dx + dy * dy < R2; };
-    let tiles = [], zoom = 0;
+    let tiles = [], zoom = 0, bgLeft = 0, bgUpper = 0;
     if (o.basemap) {
       const mx0 = mercX(minLon), mx1 = mercX(maxLon), my0 = mercY(maxLat), my1 = mercY(minLat);
       for (zoom = 18; zoom > 0; zoom--) {
@@ -680,11 +688,8 @@ function buildLayout() {
       if (o.follow) zoom = Math.min(19, o.maplibre ? o.zoomLevel : o.zoomLevel + (o.flyover ? 1 : 0));
       const world = 256 * 2 ** zoom;
       const cx = (mx0 + mx1) / 2 * world, cy = (my0 + my1) / 2 * world;
-      const left = cx - maxW / 2, upper = cy - h / 2;
+      const left = cx - maxW / 2, upper = cy - h / 2; bgLeft = left; bgUpper = upper;
       for (let i = 0; i < g.n; i++) { px[i] = x + mercX(g.lon[i]) * world - left; py[i] = y + mercY(g.lat[i]) * world - upper; }
-      const x0 = Math.floor(left / 256), x1 = Math.floor((left + maxW - 1) / 256);
-      const y0 = Math.floor(upper / 256), y1 = Math.floor((upper + h - 1) / 256);
-      for (let ty = y0; ty <= y1; ty++) for (let tx = x0; tx <= x1; tx++) tiles.push({ tx, ty, x: x + tx * 256 - left, y: y + ty * 256 - upper, img: null });
     } else {
       const offX = x + (maxW - spanX * scale) / 2;
       for (let i = 0; i < g.n; i++) { px[i] = offX + (g.lon[i] - minLon) * kx * scale; py[i] = y + pad + (maxLat - g.lat[i]) * scale; }
@@ -693,7 +698,7 @@ function buildLayout() {
     const full = new Path2D(); let pen = false;
     for (let i = 0; i < g.n; i++) { if (hidden[i]) { pen = false; continue; } if (pen) full.lineTo(px[i], py[i]); else { full.moveTo(px[i], py[i]); pen = true; } }
     map = { x, y, w: maxW, h: fullMap?H:o.follow && o.basemap ? maxH : h, fullMap, px, py, hidden, full,
-      basemap: o.basemap, follow: o.follow && o.basemap, rotate: (o.rotate || o.flyover || o.maplibre) && o.follow && o.basemap, flyover: o.flyover && o.basemap, maplibre: o.maplibre && o.basemap, smooth: o.smooth, anchor: o.maplibre ? o.flyAnchor : o.anchor, pitch:o.flyPitch, terrain:o.flyTerrain, theme:o.flyTheme, zoom, world: 256 * 2 ** zoom, tiles, ready: false };
+      basemap: o.basemap, follow: o.follow && o.basemap, rotate: (o.rotate || o.flyover || o.maplibre) && o.follow && o.basemap, flyover: o.flyover && o.basemap, maplibre: o.maplibre && o.basemap, smooth: o.smooth, anchor: o.maplibre ? o.flyAnchor : o.anchor, pitch:o.flyPitch, terrain:o.flyTerrain, theme:o.flyTheme, zoom, world: 256 * 2 ** zoom, tiles, left: bgLeft, upper: bgUpper, ready: false };
     tilesY = y + map.h + 30;
   }
   const gap = 20, tw = metrics.length ? (1000 - gap * (metrics.length - 1)) / metrics.length : 0;
@@ -707,12 +712,16 @@ function buildLayout() {
 let maplibre=null, maplibreMap=null, maplibreError=null, maplibreReady=null;
 let maplibreRouteTrack=null, maplibreRoutePrivacy=null, maplibreFrameSerial=0;
 let maplibreAppliedTheme=null;
+let maplibreModule=null;
+async function loadMapLibre(){
+  if(!maplibreModule){const mod=await import('https://cdn.jsdelivr.net/npm/maplibre-gl@5.6.2/+esm');maplibreModule=mod.default||mod;}
+  return maplibreModule;
+}
 async function ensureMapLibre(){
   if(maplibreMap)return maplibreMap;
   if(maplibreReady)return maplibreReady;
   maplibreReady=(async()=>{
-    const mod=await import('https://cdn.jsdelivr.net/npm/maplibre-gl@5.6.2/+esm');
-    maplibre=mod.default||mod;
+    maplibre=await loadMapLibre();
     const map=new maplibre.Map({
       container:'maplibreHost',style:'https://tiles.openfreemap.org/styles/liberty',
       center:[18.06,59.33],zoom:17,pitch:60,bearing:0,
@@ -1003,12 +1012,10 @@ function drawFlyover(m,f,gs,g,gi,inData) {
   flyCanvas.width=Math.round(cw*scale);flyCanvas.height=Math.round(ch*scale);
   const fc=flyCtx, cx=flyCanvas.width/2,cy=flyCanvas.height*.66;
   fc.fillStyle='#26313c';fc.fillRect(0,0,flyCanvas.width,flyCanvas.height);
+  // Background is already rotated and centred by the flat MapLibre map.
+  if(flatMap&&m.flatReady)fc.drawImage(flatMap.getCanvas(),0,0,flyCanvas.width,flyCanvas.height);
   fc.save();fc.translate(cx,cy);fc.rotate(-mapBearing(m,gs));
-  const px=cameraPosition(m,gs), left=px.x-cx,upper=px.y-cy;
-  for(const t of f.tiles){
-    const img=loadedTiles.get(t.key);
-    if(img)fc.drawImage(img,t.tx*256-left-cx,t.ty*256-upper-cy,256,256);
-  }
+  const px=cameraPosition(m,gs);
   const recent=Math.max(0,gi-90);
   for(const [a,b,color,width] of [[0,recent,'#4785C7',7],[recent,gi,'#FF8C00',9]]){
     if(b<=a)continue;
@@ -1092,7 +1099,6 @@ function drawFrame(srcT) {
     return;
   }
   if (!g) return;
-  if (L.map?.follow && !L.map.maplibre) { for (const t of followTiles(L.map, gs).tiles) if (!mapTiles.has(t.key)) loadMapTile(L.map.zoom, t.tx, t.ty).then(() => { if (!S.busy) preview(+$('scrub').value); }); }
   const inData = gs >= 0 && gs <= g.n - 1;
   // map
   if (L.map) {
@@ -1105,26 +1111,17 @@ function drawFrame(srcT) {
       drawFlyover(m,f,gs,g,Math.min(g.n-1,Math.floor(Math.max(0,gs))),inData);
     } else if (m.basemap) {
       ctx.save(); if(m.fullMap){ctx.beginPath();ctx.rect(m.x,m.y,m.w,m.h);}else roundRect(m.x,m.y,m.w,m.h,18);ctx.clip();
-      if (m.rotate) {
-        ctx.translate(f.anchorX, f.anchorY);
-        ctx.rotate(-mapBearing(m, gs));
-        ctx.translate(-f.anchorX, -f.anchorY);
-      }
-      const visibleTiles = f ? f.tiles : m.tiles;
-      for (const t of visibleTiles) {
-        if (f) {
-          // cached promises resolve to images; resolved images are tracked separately
-          if (loadedTiles.has(t.key)) ctx.drawImage(loadedTiles.get(t.key), t.x, t.y, 256, 256);
-        } else if (t.img) ctx.drawImage(t.img, t.x, t.y, 256, 256);
-      }
+      // Follow mode: MapLibre already applied rotation around the anchor.
+      const bg = m.follow ? (flatMap && m.flatReady ? flatMap.getCanvas() : null) : m.bg;
+      if (bg) ctx.drawImage(bg, m.x, m.y, m.w, m.h);
       ctx.restore();
-      if (m.follow && !f.tiles.some(t => loadedTiles.has(t.key))) {
+      if (!bg) {
         ctx.fillStyle = '#FFFFFF'; ctx.font = '24px Arial, sans-serif'; ctx.textAlign = 'center';
-        ctx.fillText(f.tiles.some(t => failedTiles.has(t.key)) ? 'Map tiles unavailable — check connection' : 'Loading map tiles…', m.x + m.w / 2, m.y + m.h / 2);
+        ctx.fillText('Loading map…', m.x + m.w / 2, m.y + m.h / 2);
       }
       ctx.fillStyle = 'rgba(0,0,0,.62)'; ctx.fillRect(m.x + 8, m.y + m.h - 32, 430, 25);
       ctx.font = '20px Arial, sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-      ctx.fillStyle = '#FFFFFF'; ctx.fillText('© OpenStreetMap contributors © CARTO', m.x + 16, m.y + m.h - 19);
+      ctx.fillStyle = '#FFFFFF'; ctx.fillText('© OpenStreetMap contributors · OpenFreeMap', m.x + 16, m.y + m.h - 19);
     }
     if (!m.flyover && !m.maplibre) {
     ctx.save(); if(m.fullMap){ctx.beginPath();ctx.rect(m.x,m.y,m.w,m.h);}else roundRect(m.x,m.y,m.w,m.h,18);ctx.clip();
@@ -1303,6 +1300,7 @@ async function preview(t) {
       const tt = pendingT; pendingT = null;
       if(hasMedia()&&!mapOnly())await seekTo(tt);
       if(S.layout?.map?.maplibre)try{await updateMapLibreFrame(S.layout.map,tt+(+$('offset').value||0),S.track,false);}catch(e){setStatus('MapLibre: '+e.message,'err');}
+      else if(S.layout?.map?.follow)try{await updateFlatFrame(S.layout.map,tt+(+$('offset').value||0),false);}catch(e){setStatus('Map: '+e.message,'err');}
       drawFrame(tt);
       const off = +$('offset').value || 0, g = S.track;
       const pos = S.kind === 'image' ? `Photo ${S.curIdx + 1} / ${S.photos.length}` : `Video ${fmtDur(tt)} / ${fmtDur(S.total)}`;
@@ -1319,8 +1317,9 @@ function refresh() {
   buildLayout();
   if (S.layout.map?.basemap) {
     const m = S.layout.map;
-    (m.maplibre ? ensureMapLibre().then(()=>updateMapLibreFrame(m,+$('scrub').value+(+$('offset').value||0),S.track,true)) : m.follow ? prepareFollowTiles(m, +$('scrub').value) : prepareMapTiles())
-      .then(() => { if (!S.busy) preview(+$('scrub').value); });
+    (m.maplibre ? ensureMapLibre().then(()=>updateMapLibreFrame(m,+$('scrub').value+(+$('offset').value||0),S.track,true)) : m.follow ? ensureFlatMap() : prepareMapTiles())
+      .then(() => { if (!S.busy) preview(+$('scrub').value); })
+      .catch(e => setStatus('Map background could not be loaded: ' + (e.message || e), 'err'));
   }
   $('maplibreSettings').style.display=$('mapMode').value==='maplibre'?'block':'none';
   $('mapZoomValue').textContent = $('mapZoom').value;
@@ -1564,28 +1563,10 @@ async function render() {
     if (m.maplibre) {
       try { setStatus('Loading MapLibre 3D terrain and buildings…'); await ensureMapLibre(); }
       catch(e){setStatus('MapLibre initialization failed: '+e.message,'err');return;}
-    } else if (m.follow) {
-      setStatus('Loading map tiles for animated preview…');
-      // Preload only tiles needed along the chosen clip, with a strict request cap.
-      const a=win.t0,b=win.t1;
-      const required = new Map();
-      const steps = Math.min(600,Math.max(32,Math.ceil(win.len)));
-      for (let j = 0; j <= steps; j++) {
-        const srcT = a + (b - a) * j / steps;
-        for (const t of followTiles(m, srcT + (+$('offset').value || 0)).tiles)
-          required.set(t.key, t);
-      }
-      // Preload a bounded subset. Remaining tiles are fetched as needed
-      // during export, so high zoom never prevents rendering.
-      const jobs = [...required.values()].slice(0, 120);
-      for (let k = 0; k < jobs.length; k += 6) {
-        await Promise.all(jobs.slice(k, k + 6).map(t => loadMapTile(m.zoom, t.tx, t.ty)));
-      }
-      if (!jobs.some(t => loadedTiles.has(t.key))) {
-        setStatus('Map background could not be loaded. Check browser network access and tile server availability.', 'err');
-        return;
-      }
-    } else { setStatus('Loading static map tiles…'); await prepareMapTiles(); }
+    } else {
+      try { setStatus('Loading map…'); if (m.follow) await ensureFlatMap(); else await prepareMapTiles(); }
+      catch (e) { setStatus('Map background could not be loaded: ' + (e.message || e), 'err'); return; }
+    }
   }
   const {len,t0,t1}=win,N=Math.max(2,Math.round(len*FPS));
   S.busy = true; lock(true); $('download').style.display = 'none'; $('result').style.display = 'none';
@@ -1604,7 +1585,7 @@ async function render() {
     });
     // Software encoding is more reliable when a WebGL 3D map is rendered
     // concurrently with WebCodecs on GPUs with limited video resources.
-    const renderCfg=S.layout.map?.maplibre?{...cfg,hardwareAcceleration:'prefer-software'}:cfg;
+    const renderCfg=(S.layout.map?.maplibre||S.layout.map?.follow)?{...cfg,hardwareAcceleration:'prefer-software'}:cfg;
     enc.configure(renderCfg);
     const checkEncoder=()=>{
       if(encErr)throw Error('Video encoder error: '+(encErr.message||String(encErr)));
@@ -1613,19 +1594,17 @@ async function render() {
     const started = performance.now();
     const frameGs = j => t0 + (t1 - t0) * Math.min(j, N - 1) / (N - 1) + (+$('offset').value || 0);
     const LOOKAHEAD = 45;
-    if (S.layout.map?.maplibre) for (let j = 0; j < LOOKAHEAD; j++) prefetchFlyTiles(maplibreMap, S.layout.map, S.track, frameGs(j));
+    const prefetchMap = S.layout.map?.maplibre ? maplibreMap : S.layout.map?.follow ? flatMap : null;
+    if (prefetchMap) for (let j = 0; j < LOOKAHEAD; j++) prefetchFlyTiles(prefetchMap, S.layout.map, S.track, frameGs(j));
     for (let i = 0; i < N; i++) {
       checkEncoder();
       const srcT = t0 + (t1 - t0) * i / (N - 1);
-      if (S.layout.map?.maplibre && i + LOOKAHEAD < N) prefetchFlyTiles(maplibreMap, S.layout.map, S.track, frameGs(i + LOOKAHEAD));
+      if (prefetchMap && i + LOOKAHEAD < N) prefetchFlyTiles(prefetchMap, S.layout.map, S.track, frameGs(i + LOOKAHEAD));
       if(hasMedia()&&!mapOnly())await seekTo(srcT);
       if (S.layout.map?.maplibre) {
         await updateMapLibreFrame(S.layout.map,srcT+(+$('offset').value||0),S.track,true);
-      } else if (S.layout.map?.follow && S.layout.map.basemap) {
-        const m = S.layout.map;
-        const needed = followTiles(m, srcT + (+$('offset').value || 0)).tiles.filter(t => !loadedTiles.has(t.key));
-        for(let k=0;k<needed.length;k+=6)
-          await Promise.all(needed.slice(k,k+6).map(t=>loadMapTile(m.zoom,t.tx,t.ty)));
+      } else if (S.layout.map?.follow) {
+        await updateFlatFrame(S.layout.map, srcT + (+$('offset').value || 0), true);
       }
       drawFrame(srcT);
       checkEncoder();
